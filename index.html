@@ -106,7 +106,20 @@ ol.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;ga
 </head>
 <body>
 <div class="wrap">
-  <h1>Servis durakları</h1>
+  <div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px">
+    <h1>Servis durakları</h1><span class="note" id="sync" style="margin:0;text-align:right">Bu telefonda</span>
+  </div>
+
+  <div class="card hidden" id="loginCard">
+    <h2>Ortak kayda giriş</h2>
+    <p class="note">Firebase'de oluşturduğun hesapla bir kez giriş yap. Sonra bu cihaz hep aynı kayıtları görür.</p>
+    <div class="row">
+      <input type="text" id="lgEmail" placeholder="E-posta" autocomplete="username" inputmode="email">
+      <input type="password" id="lgPass" placeholder="Şifre" autocomplete="current-password" style="font:inherit;color:var(--ink);background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 12px;flex:1 1 140px;min-width:0">
+    </div>
+    <div class="row" style="margin-top:8px"><button class="btn primary" id="lgBtn">Giriş yap</button></div>
+    <p class="note warn" id="lgErr" style="margin-top:8px"></p>
+  </div>
 
   <div class="seg c4 tabs" role="tablist">
     <button data-tab="week" aria-pressed="false">Hafta</button>
@@ -201,16 +214,30 @@ ol.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;ga
 
   <div class="card" style="margin-top:22px">
     <h2>Yedek</h2>
-    <p class="note">Her şey bu telefonun tarayıcısında saklanır. Tarayıcı verisini silersen ya da telefon değiştirirsen kaybolmaması için ara ara yedek al.</p>
+    <p class="note" id="backupNote">Her şey bu telefonun tarayıcısında saklanır. Kaybolmaması için ara ara yedeği kendine gönder (WhatsApp, Drive, e-posta).</p>
     <div class="row">
-      <button class="btn" id="exportBtn">Yedeği indir</button>
+      <button class="btn" id="exportBtn">Yedeği gönder</button>
       <button class="btn" id="importBtn">Yedekten yükle</button>
-      <input type="file" id="importFile" accept="application/json,.json" hidden>
+      <button class="btn hidden" id="logoutBtn">Çıkış yap</button>
+      <input type="file" id="importFile" accept=".json,.txt,application/json,text/plain" hidden>
     </div>
   </div>
 </div>
 <script>
 (function(){
+  // ===== ORTAK KAYIT (Firebase) =====
+  // Firebase konsolundaki "firebaseConfig" nesnesini buraya yapıştır. null kalırsa her şey sadece bu cihazda tutulur.
+    const FIREBASE_CONFIG = {
+        apiKey: "AIzaSyDei2y_SIlaEV5ly-V-3tw_kTjgvpUYu2I",
+        authDomain: "servis-duraklari.firebaseapp.com",
+        projectId: "servis-duraklari",
+        storageBucket: "servis-duraklari.firebasestorage.app",
+        messagingSenderId: "506092503121",
+        appId: "1:506092503121:web:e7016a6d2ea82df1ba7870",
+        measurementId: "G-CKTRYTSPLE"
+    };
+  // ==================================
+
   const FACTORY = {lat:40.8224342, lng:29.356073, name:"Knorr fabrikası"};
   const MAX_WAYPOINTS = 9;
   const SHIFTS = ["00","08","16"];
@@ -236,7 +263,7 @@ ol.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;ga
         const old = localStorage.getItem(OLD_KEY);
         if(old){ data.stops = migrateV1(JSON.parse(old).state || {}); }
       }
-      upgrade(); save();
+      upgrade(); lastJson = dataJson(); writeLocal();
     }catch(e){}
   }
   // Eski sürümdeki kişi başı vardiya/binme bilgisini haftalık listeye taşı
@@ -248,9 +275,75 @@ ol.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;ga
     }
     data.people.forEach(p=>{ delete p.shift; delete p.ride; });
     if(!data.service) data.service = "Köseköy";
+    // Eski sürümden gelen dolu veri, boş bir cihazın verisine karşı kazansın
+    if(!data.updatedAt && (data.stops.length || data.people.length)) data.updatedAt = 1;
     if(!["stops","people","routes","week"].includes(ui.tab)) ui.tab="stops";
   }
-  function save(){ try{ localStorage.setItem(KEY, JSON.stringify({data, ui}, (k,v)=> k==="_openDrop"?undefined:v)); }catch(e){ setStatus("Kaydedilemedi: tarayıcı depolaması dolu ya da kapalı.", true); } }
+  const REPL = (k,v)=> k==="_openDrop"?undefined:v;
+  let lastJson = "";
+  function dataJson(){ return JSON.stringify(Object.assign({}, data, {updatedAt:0}), REPL); }
+  function writeLocal(){ try{ localStorage.setItem(KEY, JSON.stringify({data, ui}, REPL)); }catch(e){ setStatus("Kaydedilemedi: tarayıcı depolaması dolu ya da kapalı.", true); } }
+  function save(){
+    const j = dataJson();
+    if(j !== lastJson){ lastJson = j; data.updatedAt = Date.now(); schedulePush(); }
+    writeLocal();
+  }
+  function isEditing(){ const a=document.activeElement; return a && (a.tagName==="INPUT"||a.tagName==="TEXTAREA"||a.tagName==="SELECT") && !a.closest("#loginCard"); }
+
+  // ---------- ortak kayıt ----------
+  let cloudDoc = null, pushTimer = null, cloudReady = false;
+  function syncState(t, err){ const e=$("sync"); e.textContent=t; e.classList.toggle("warn",!!err); }
+  function loadScript(src){ return new Promise((res,rej)=>{ const sc=document.createElement("script"); sc.src=src; sc.onload=res; sc.onerror=()=>rej(new Error(src)); document.head.appendChild(sc); }); }
+  function schedulePush(){ if(!cloudReady) return; clearTimeout(pushTimer); syncState("Kaydediliyor…"); pushTimer=setTimeout(pushNow, 700); }
+  function pushNow(){
+    if(!cloudDoc) return;
+    cloudDoc.set({payload: JSON.stringify(data, REPL), updatedAt: data.updatedAt||Date.now()})
+      .then(()=>syncState("Ortak kayıt güncel"))
+      .catch(e=>syncState("Buluta yazılamadı ("+(e.code||"hata")+")", true));
+  }
+  async function initCloud(){
+    if(!FIREBASE_CONFIG) return;
+    $("backupNote").textContent = "Kayıtlar ortak kayıtta tutuluyor, her cihazda aynı. Yine de ara ara yedeği kendine göndermen iyi olur.";
+    syncState("Bağlanıyor…");
+    try{
+      const v="10.12.2", base="https://www.gstatic.com/firebasejs/"+v+"/";
+      await loadScript(base+"firebase-app-compat.js");
+      await Promise.all([loadScript(base+"firebase-auth-compat.js"), loadScript(base+"firebase-firestore-compat.js")]);
+      firebase.initializeApp(FIREBASE_CONFIG);
+      const fdb = firebase.firestore();
+      try{ await fdb.enablePersistence({synchronizeTabs:true}); }catch(e){}
+      cloudDoc = fdb.collection("servis").doc("ortak");
+      let unsub = null;
+      firebase.auth().onAuthStateChanged(u=>{
+        if(unsub){ unsub(); unsub=null; }
+        cloudReady = false;
+        $("loginCard").classList.toggle("hidden", !!u);
+        $("logoutBtn").classList.toggle("hidden", !u);
+        if(!u){ syncState("Giriş yapılmadı, bu telefonda", true); return; }
+        syncState("Eşitleniyor…");
+        unsub = cloudDoc.onSnapshot(snap=>{
+          if(snap.metadata.hasPendingWrites) return;
+          cloudReady = true;
+          const r = snap.exists ? snap.data() : null;
+          if(!r || !r.payload){ pushNow(); return; }
+          const remote = JSON.parse(r.payload);
+          const lu = data.updatedAt||0, ru = remote.updatedAt||0;
+          if(lu > ru){ pushNow(); return; }
+          if(lu === ru){ syncState(snap.metadata.fromCache ? "Çevrimdışı, sonra eşitlenecek" : "Ortak kayıt güncel"); return; }
+          data = Object.assign({stops:[],people:[],routes:[],week:null,service:"Köseköy"}, remote);
+          upgrade(); lastJson = dataJson(); writeLocal();
+          if(!isEditing()) render();
+          syncState("Ortak kayıt güncel");
+        }, e=>syncState("Bağlantı hatası ("+(e.code||"")+")", true));
+      });
+    }catch(e){ syncState("Ortak kayda bağlanılamadı, bu telefonda", true); }
+  }
+  $("lgBtn").addEventListener("click", async ()=>{
+    $("lgErr").textContent="";
+    try{ await firebase.auth().signInWithEmailAndPassword($("lgEmail").value.trim(), $("lgPass").value); $("lgPass").value=""; }
+    catch(e){ $("lgErr").textContent = /invalid|wrong|not-found|credential/i.test(e.code||"") ? "E-posta ya da şifre yanlış." : "Giriş yapılamadı ("+(e.code||"hata")+")."; }
+  });
+  $("logoutBtn").addEventListener("click", ()=>{ if(confirm("Bu cihazdan çıkış yapılsın mı?")) firebase.auth().signOut(); });
 
   function migrateV1(state){
     const out = [];
@@ -801,13 +894,18 @@ ol.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;ga
     e.target.value="";
   });
 
-  $("exportBtn").addEventListener("click",()=>{
-    const blob=new Blob([JSON.stringify({app:"servis-duraklari",v:3,saved:Date.now(),data},null,2)],{type:"application/json"});
-    const a=document.createElement("a"), d=new Date();
-    a.href=URL.createObjectURL(blob);
-    a.download="duraklar-"+d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0")+".json";
-    document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(a.href),2000);
-    alert("Yedek indirildi.");
+  $("exportBtn").addEventListener("click", async ()=>{
+    const d=new Date();
+    const fname="servis-yedek-"+d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0")+".txt";
+    const json=JSON.stringify({app:"servis-duraklari",v:3,saved:Date.now(),data},REPL);
+    const file=new File([json], fname, {type:"text/plain"});
+    if(navigator.canShare && navigator.canShare({files:[file]})){
+      try{ await navigator.share({files:[file], title:"Servis yedeği"}); return; }
+      catch(e){ if(e.name==="AbortError") return; }
+    }
+    const a=document.createElement("a");
+    a.href=URL.createObjectURL(file); a.download=fname;
+    document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(a.href),3000);
   });
   $("importBtn").addEventListener("click",()=>$("importFile").click());
   $("importFile").addEventListener("change",async e=>{
@@ -826,6 +924,7 @@ ol.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;ga
 
   load();
   render();
+  initCloud();
 })();
 </script>
 </body>
