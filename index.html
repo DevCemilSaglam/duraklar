@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Servis Durakları</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&family=Barlow+Condensed:wght@600;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#eef0ee; --panel:#ffffff; --ink:#1b1f1d; --muted:#5d6661; --line:#d5dad6;
+  --sign:#1f6b45; --sign-ink:#ffffff; --amber:#f2b01e; --amber-ink:#1b1f1d; --danger:#b3261e;
+  box-sizing:border-box;
+  padding-top:env(safe-area-inset-top,0px); padding-bottom:env(safe-area-inset-bottom,0px);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#15181a; --panel:#1f2326; --ink:#eef0ee; --muted:#9aa39e; --line:#30363a;
+    --sign:#2c8a5b; --sign-ink:#ffffff; --amber:#f5b82a; --amber-ink:#15181a; --danger:#ff8a80;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#15181a; --panel:#1f2326; --ink:#eef0ee; --muted:#9aa39e; --line:#30363a;
+  --sign:#2c8a5b; --sign-ink:#ffffff; --amber:#f5b82a; --amber-ink:#15181a; --danger:#ff8a80;
+}
+*,*::before,*::after{box-sizing:border-box}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:"Barlow",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;font-size:17px;line-height:1.45}
+.wrap{max-width:560px;margin:0 auto;padding:16px 16px 40px}
+header{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin-bottom:14px}
+h1{font-family:"Barlow Condensed","Arial Narrow",sans-serif;font-weight:700;font-size:30px;margin:0;letter-spacing:.2px}
+.sync{font-size:13px;color:var(--muted)}
+.shifts{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:5px;margin-bottom:14px}
+.shifts button{font-family:"Barlow Condensed","Arial Narrow",sans-serif;font-size:22px;font-weight:700;border:0;border-radius:10px;padding:8px 0;background:transparent;color:var(--muted);cursor:pointer}
+.shifts button[aria-pressed="true"]{background:var(--sign);color:var(--sign-ink)}
+.save{display:block;width:100%;border:0;border-radius:18px;background:var(--amber);color:var(--amber-ink);font-family:"Barlow Condensed","Arial Narrow",sans-serif;font-weight:700;font-size:34px;padding:26px 16px;cursor:pointer;box-shadow:0 3px 0 rgba(0,0,0,.25)}
+.save:active{transform:translateY(2px);box-shadow:0 1px 0 rgba(0,0,0,.25)}
+.save:disabled{opacity:.6}
+.save small{display:block;font-family:"Barlow",sans-serif;font-weight:500;font-size:14px;margin-top:2px}
+.status{min-height:22px;font-size:15px;margin:10px 2px 16px;color:var(--muted)}
+.status.err{color:var(--danger)}
+.manual{display:none;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:12px;margin-bottom:16px}
+.manual.show{display:block}
+.manual p{margin:0 0 8px;font-size:15px;color:var(--muted)}
+.row{display:flex;gap:8px}
+input[type=text]{font:inherit;color:var(--ink);background:transparent;border:1px solid var(--line);border-radius:10px;padding:10px 12px;width:100%;min-width:0}
+input[type=text]:focus{outline:2px solid var(--sign);outline-offset:1px;border-color:transparent}
+.btn{font:inherit;font-weight:600;border:1px solid var(--line);background:var(--panel);color:var(--ink);border-radius:10px;padding:10px 14px;cursor:pointer;white-space:nowrap}
+.btn.primary{background:var(--sign);color:var(--sign-ink);border-color:var(--sign)}
+button:focus-visible{outline:3px solid var(--sign);outline-offset:2px}
+.listhead{display:flex;justify-content:space-between;align-items:baseline;margin:6px 2px 8px}
+.listhead h2{font-family:"Barlow Condensed","Arial Narrow",sans-serif;font-size:22px;margin:0}
+.listhead span{font-size:14px;color:var(--muted)}
+ol.stops{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:8px}
+.stop{display:grid;grid-template-columns:42px 1fr;gap:10px;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:10px}
+.num{width:42px;height:42px;border-radius:50%;background:var(--sign);color:var(--sign-ink);display:grid;place-items:center;font-family:"Barlow Condensed","Arial Narrow",sans-serif;font-weight:700;font-size:22px}
+.meta{font-size:13px;color:var(--muted);margin-top:4px}
+.meta .warn{color:var(--danger)}
+.tools{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap}
+.tools button,.tools a{font:inherit;font-size:14px;font-weight:600;border:1px solid var(--line);background:transparent;color:var(--ink);border-radius:8px;padding:6px 10px;cursor:pointer;text-decoration:none}
+.tools .del{color:var(--danger);margin-left:auto}
+.empty{background:var(--panel);border:1px dashed var(--line);border-radius:14px;padding:18px;color:var(--muted);text-align:center}
+.route{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px;margin-top:18px}
+.route h2{font-family:"Barlow Condensed","Arial Narrow",sans-serif;font-size:22px;margin:0 0 8px}
+.route label{display:flex;gap:10px;align-items:center;padding:6px 0;font-size:16px}
+.route input[type=checkbox]{width:22px;height:22px;accent-color:var(--sign)}
+.go{display:flex;flex-direction:column;gap:8px;margin-top:10px}
+.go a{display:block;text-align:center;text-decoration:none;background:var(--sign);color:var(--sign-ink);font-weight:600;border-radius:12px;padding:14px;font-size:18px}
+.note{margin:0 0 10px;font-size:14px;color:var(--muted)}
+.go p{margin:0;font-size:14px;color:var(--muted)}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Servis durakları</h1>
+    <span class="sync">Bu telefonda saklanır</span>
+  </header>
+
+  <div class="shifts" role="group" aria-label="Vardiya">
+    <button data-shift="08" aria-pressed="true">08:00</button>
+    <button data-shift="16" aria-pressed="false">16:00</button>
+    <button data-shift="00" aria-pressed="false">00:00</button>
+  </div>
+
+  <button class="save" id="saveBtn">Durağı kaydet<small>Şu anki konumun eklenir, adını sonra verirsin</small></button>
+  <div class="status" id="status" role="status" aria-live="polite"></div>
+
+  <div class="manual" id="manual">
+    <p>Konum alınamadı. Telefonun konumu açık mı ve tarayıcıya izin verdin mi? Olmazsa Google Maps'te bulunduğun yere basılı tut, çıkan koordinatı (ör. 40.7654, 29.9408) kopyalayıp buraya yapıştır.</p>
+    <div class="row">
+      <input type="text" id="manualInput" placeholder="40.7654, 29.9408" inputmode="decimal">
+      <button class="btn primary" id="manualAdd">Ekle</button>
+    </div>
+  </div>
+
+  <div class="listhead"><h2 id="listTitle">08:00 vardiyası</h2><span id="count"></span></div>
+  <ol class="stops" id="stops"></ol>
+
+  <section class="route">
+    <h2>Google Maps rotası</h2>
+    <label><input type="checkbox" id="fromHere" checked> Rotayı bulunduğum yerden başlat</label>
+    <label><input type="checkbox" id="toFactory" checked> Sona Knorr fabrikasını ekle</label>
+    <div class="go" id="go"></div>
+  </section>
+
+  <section class="route">
+    <h2>Yedek</h2>
+    <p class="note">Duraklar bu tarayıcıda saklanır. Tarayıcı verilerini silersen ya da telefon değiştirirsen kaybolmaması için ara ara yedek al.</p>
+    <div class="row">
+      <button class="btn" id="exportBtn">Yedeği indir</button>
+      <button class="btn" id="importBtn">Yedekten yükle</button>
+      <input type="file" id="importFile" accept="application/json,.json" hidden>
+    </div>
+  </section>
+</div>
+
+<script>
+(function(){
+  const FACTORY = {lat:40.8224342, lng:29.356073, name:"Knorr fabrikası"};
+  const MAX_WAYPOINTS = 9;
+  const SHIFT_LABEL = {"08":"08:00","16":"16:00","00":"00:00"};
+  const LS_KEY = "servis-duraklari-v1";
+
+  let state = {"08":[], "16":[], "00":[]};
+  let prefs = {shift:"08", fromHere:true, toFactory:true};
+
+  const $ = id => document.getElementById(id);
+  const stopsEl = $("stops"), statusEl = $("status");
+
+  // ---------- storage ----------
+  function loadLocal(){
+    try{
+      const raw = localStorage.getItem(LS_KEY);
+      if(raw){ const d = JSON.parse(raw); if(d.state) state = Object.assign(state, d.state); if(d.prefs) prefs = Object.assign(prefs, d.prefs); }
+    }catch(e){}
+  }
+  function saveLocal(){
+    try{ localStorage.setItem(LS_KEY, JSON.stringify({state, prefs})); }catch(e){}
+  }
+  function persist(shift){
+    saveLocal();
+  }
+
+  function isEditing(){
+    const a = document.activeElement;
+    return a && a.classList && a.classList.contains("name-input");
+  }
+
+  // ---------- helpers ----------
+  function uid(){ return Date.now().toString(36) + Math.random().toString(36).slice(2,6); }
+  function fmtTime(ts){
+    const d = new Date(ts);
+    return d.toLocaleDateString("tr-TR",{day:"2-digit",month:"2-digit"}) + " " + d.toLocaleTimeString("tr-TR",{hour:"2-digit",minute:"2-digit"});
+  }
+  function ll(p){ return p.lat.toFixed(6) + "," + p.lng.toFixed(6); }
+  function setStatus(msg, err){ statusEl.textContent = msg || ""; statusEl.classList.toggle("err", !!err); }
+
+  function addStop(lat, lng, acc){
+    const list = state[prefs.shift];
+    list.push({id:uid(), lat, lng, acc: acc == null ? null : Math.round(acc), t:Date.now(), name:""});
+    persist(prefs.shift);
+    render();
+    setStatus("Durak " + list.length + " kaydedildi" + (acc ? " (±" + Math.round(acc) + " m)" : "") + ". Adını sonra verebilirsin.");
+  }
+
+  // ---------- render ----------
+  function render(){
+    document.querySelectorAll(".shifts button").forEach(b => b.setAttribute("aria-pressed", b.dataset.shift === prefs.shift ? "true":"false"));
+    $("listTitle").textContent = SHIFT_LABEL[prefs.shift] + " vardiyası";
+    $("fromHere").checked = prefs.fromHere;
+    $("toFactory").checked = prefs.toFactory;
+
+    const list = state[prefs.shift];
+    $("count").textContent = list.length ? list.length + " durak" : "";
+    stopsEl.innerHTML = "";
+
+    if(!list.length){
+      const li = document.createElement("li");
+      li.className = "empty";
+      li.textContent = "Bu vardiyada henüz durak yok. İlk durağa geldiğinde sarı düğmeye bas.";
+      stopsEl.appendChild(li);
+    }
+
+    list.forEach((s, i) => {
+      const li = document.createElement("li");
+      li.className = "stop";
+
+      const num = document.createElement("div");
+      num.className = "num"; num.textContent = i + 1;
+
+      const body = document.createElement("div");
+      const inp = document.createElement("input");
+      inp.type = "text"; inp.className = "name-input";
+      inp.placeholder = "Durak " + (i+1) + " (isim ver)";
+      inp.value = s.name || "";
+      inp.setAttribute("aria-label", "Durak " + (i+1) + " adı");
+      inp.addEventListener("change", () => { s.name = inp.value.trim(); persist(prefs.shift); });
+      inp.addEventListener("keydown", e => { if(e.key === "Enter") inp.blur(); });
+
+      const meta = document.createElement("div");
+      meta.className = "meta";
+      meta.textContent = fmtTime(s.t) + " kaydedildi";
+      if(s.acc != null){
+        const a = document.createElement("span");
+        a.textContent = "  ±" + s.acc + " m";
+        if(s.acc > 50) { a.className = "warn"; a.textContent += " (konum zayıf)"; }
+        meta.appendChild(a);
+      }
+
+      const tools = document.createElement("div");
+      tools.className = "tools";
+      const up = btn("Yukarı", () => move(i, -1)); up.disabled = i === 0;
+      const down = btn("Aşağı", () => move(i, 1)); down.disabled = i === list.length - 1;
+      const view = document.createElement("a");
+      view.textContent = "Haritada gör";
+      view.href = "https://www.google.com/maps/search/?api=1&query=" + ll(s);
+      view.target = "_blank"; view.rel = "noopener";
+      const del = btn("Sil", () => {
+        if(confirm((s.name || "Durak " + (i+1)) + " silinsin mi?")){ list.splice(i,1); persist(prefs.shift); render(); }
+      });
+      del.className = "del";
+      tools.append(up, down, view, del);
+
+      body.append(inp, meta, tools);
+      li.append(num, body);
+      stopsEl.appendChild(li);
+    });
+
+    renderRoute();
+  }
+
+  function btn(label, fn){ const b = document.createElement("button"); b.type = "button"; b.textContent = label; b.addEventListener("click", fn); return b; }
+  function move(i, dir){
+    const list = state[prefs.shift], j = i + dir;
+    if(j < 0 || j >= list.length) return;
+    [list[i], list[j]] = [list[j], list[i]];
+    persist(prefs.shift); render();
+  }
+
+  // ---------- Google Maps route ----------
+  function buildLinks(){
+    let pts = state[prefs.shift].map(s => ({lat:s.lat, lng:s.lng}));
+    if(prefs.toFactory) pts.push(FACTORY);
+    if(!pts.length) return [];
+    const links = [];
+    let origin = prefs.fromHere ? null : pts.shift();
+    if(!pts.length) return [];
+    // Her link: (başlangıç) + en fazla 9 ara durak + varış
+    while(pts.length){
+      const chunk = pts.splice(0, MAX_WAYPOINTS + 1);
+      const dest = chunk.pop();
+      let url = "https://www.google.com/maps/dir/?api=1&travelmode=driving";
+      if(origin) url += "&origin=" + ll(origin);
+      url += "&destination=" + ll(dest);
+      if(chunk.length) url += "&waypoints=" + chunk.map(ll).join("%7C");
+      links.push({url, count: chunk.length + 1});
+      origin = dest;
+    }
+    return links;
+  }
+
+  function renderRoute(){
+    const go = $("go"); go.innerHTML = "";
+    const links = buildLinks();
+    if(!links.length){
+      const p = document.createElement("p");
+      p.textContent = "Rota için en az bir durak kaydet.";
+      go.appendChild(p); return;
+    }
+    links.forEach((l, i) => {
+      const a = document.createElement("a");
+      a.href = l.url; a.target = "_blank"; a.rel = "noopener";
+      a.textContent = links.length > 1 ? "Rota " + (i+1) + ". bölüm (" + l.count + " nokta)" : "Rotayı Google Maps'te aç";
+      go.appendChild(a);
+    });
+    if(links.length > 1){
+      const p = document.createElement("p");
+      p.textContent = "Google Maps tek rotada en fazla 10 nokta alıyor. Bir bölüm bitince sonrakini aç.";
+      go.appendChild(p);
+    }
+  }
+
+  // ---------- events ----------
+  document.querySelectorAll(".shifts button").forEach(b => b.addEventListener("click", () => {
+    prefs.shift = b.dataset.shift; saveLocal(); setStatus(""); render();
+  }));
+  $("fromHere").addEventListener("change", e => { prefs.fromHere = e.target.checked; saveLocal(); renderRoute(); });
+  $("toFactory").addEventListener("change", e => { prefs.toFactory = e.target.checked; saveLocal(); renderRoute(); });
+
+  $("saveBtn").addEventListener("click", () => {
+    if(!("geolocation" in navigator)){ showManual("Bu tarayıcı konum vermiyor."); return; }
+    const b = $("saveBtn"); b.disabled = true;
+    setStatus("Konum alınıyor...");
+    navigator.geolocation.getCurrentPosition(pos => {
+      b.disabled = false;
+      addStop(pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy);
+    }, err => {
+      b.disabled = false;
+      const msg = err.code === 1 ? "Konum izni verilmedi." : err.code === 3 ? "Konum zaman aşımına uğradı, tekrar dene." : "Konum alınamadı.";
+      showManual(msg);
+    }, {enableHighAccuracy:true, timeout:15000, maximumAge:0});
+  });
+
+  function showManual(msg){ setStatus(msg, true); $("manual").classList.add("show"); }
+
+  $("manualAdd").addEventListener("click", () => {
+    const m = $("manualInput").value.match(/(-?\d{1,2}\.\d+)\s*[, ]\s*(-?\d{1,3}\.\d+)/);
+    if(!m){ setStatus("Koordinat okunamadı. 40.7654, 29.9408 biçiminde yapıştır.", true); return; }
+    addStop(parseFloat(m[1]), parseFloat(m[2]), null);
+    $("manualInput").value = "";
+  });
+
+  $("exportBtn").addEventListener("click", () => {
+    const blob = new Blob([JSON.stringify({app:"servis-duraklari", v:1, saved:Date.now(), state}, null, 2)], {type:"application/json"});
+    const a = document.createElement("a");
+    const d = new Date();
+    a.href = URL.createObjectURL(blob);
+    a.download = "duraklar-" + d.getFullYear() + "-" + String(d.getMonth()+1).padStart(2,"0") + "-" + String(d.getDate()).padStart(2,"0") + ".json";
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+    setStatus("Yedek indirildi.");
+  });
+  $("importBtn").addEventListener("click", () => $("importFile").click());
+  $("importFile").addEventListener("change", async e => {
+    const f = e.target.files[0]; if(!f) return;
+    try{
+      const d = JSON.parse(await f.text());
+      if(!d.state || !Array.isArray(d.state["08"])) throw new Error();
+      if(!confirm("Mevcut duraklar yedektekilerle değiştirilsin mi?")) return;
+      state = {"08":d.state["08"]||[], "16":d.state["16"]||[], "00":d.state["00"]||[]};
+      saveLocal(); render(); setStatus("Yedek yüklendi.");
+    }catch(err){ setStatus("Bu dosya okunamadı. Uygulamadan indirilen .json yedeği seç.", true); }
+    e.target.value = "";
+  });
+
+  loadLocal();
+  render();
+})();
+</script>
+</body>
+</html>
