@@ -253,8 +253,10 @@ ol.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;ga
       <button class="btn" id="exportBtn">Yedeği gönder</button>
       <button class="btn" id="importBtn">Yedekten yükle</button>
       <button class="btn hidden" id="logoutBtn">Çıkış yap</button>
+      <button class="btn" id="snapBtn">Otomatik yedekler</button>
       <input type="file" id="importFile" accept=".json,.txt,application/json,text/plain" hidden>
     </div>
+    <div id="snapList" class="hidden" style="margin-top:10px"></div>
   </div>
 </div>
 <script>
@@ -322,6 +324,44 @@ ol.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;ga
   let lastJson = "";
   function dataJson(){ return JSON.stringify(Object.assign({}, data, {updatedAt:0}), REPL); }
   function writeLocal(){ try{ localStorage.setItem(KEY, JSON.stringify({data, ui}, REPL)); }catch(e){ setStatus("Kaydedilemedi: tarayıcı depolaması dolu ya da kapalı.", true); } }
+  // ---------- otomatik yedek ----------
+  const SNAP_KEY = "servis-otomatik-yedek";
+  function counts(d){ return {s:(d.stops||[]).length, p:(d.people||[]).length, r:(d.routes||[]).length}; }
+  function snapshot(reason){
+    try{
+      if(!data.stops.length && !data.people.length) return;
+      const list = JSON.parse(localStorage.getItem(SNAP_KEY)||"[]");
+      const j = JSON.stringify(data, REPL);
+      if(list[0] && list[0].j === j) return;
+      list.unshift({t:Date.now(), reason, j});
+      localStorage.setItem(SNAP_KEY, JSON.stringify(list.slice(0,8)));
+    }catch(e){}
+  }
+  function renderSnaps(){
+    const box = $("snapList"); box.innerHTML="";
+    let list=[]; try{ list = JSON.parse(localStorage.getItem(SNAP_KEY)||"[]"); }catch(e){}
+    box.appendChild(el("p","note","Toplu değişikliklerden önce bu cihazda otomatik alınan yedekler. Geri yükleme mevcut kayıtları silmez, eksik olanları geri ekler."));
+    if(!list.length){ box.appendChild(el("p","note","Henüz otomatik yedek yok.")); return; }
+    list.forEach(sn=>{
+      let d; try{ d = JSON.parse(sn.j); }catch(e){ return; }
+      const c = counts(d);
+      const row = el("div","cand");
+      row.appendChild(el("div",null, fmtDate(sn.t)+" · "+sn.reason));
+      row.appendChild(el("div","meta", c.s+" durak, "+c.p+" yolcu, "+c.r+" rota"));
+      const tl2 = el("div","tools");
+      tl2.appendChild(btn("Geri yükle",()=>{
+        if(!confirm("Bu yedekteki kayıtlar geri eklensin mi? Mevcut kayıtlar silinmez.")) return;
+        const before = counts(data);
+        snapshot("Geri yüklemeden önce");
+        data = mergeData(d, data); upgrade(); save(); render();
+        const a = counts(data);
+        alert("Geri eklendi: "+(a.s-before.s)+" durak, "+(a.p-before.p)+" yolcu, "+(a.r-before.r)+" rota.");
+        renderSnaps();
+      }));
+      row.appendChild(tl2); box.appendChild(row);
+    });
+  }
+
   function save(){
     const j = dataJson();
     if(j !== lastJson){ lastJson = j; data.updatedAt = Date.now(); schedulePush(); }
@@ -395,6 +435,7 @@ ol.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;ga
           // Oturumun ilk sunucu verisinde iki tarafı birleştir, hiçbir cihazın kaydı kaybolmasın
           if(!snap.metadata.fromCache && !merged){
             merged = true;
+            snapshot("Ortak kayda bağlanmadan önce");
             const m = mergeData(data, remote);
             data = m; upgrade(); lastJson = dataJson(); writeLocal();
             if(dataJson() !== JSON.stringify(Object.assign({}, remote, {updatedAt:0}), REPL) || !remote.updatedAt){ data.updatedAt = Date.now(); writeLocal(); pushNow(); }
@@ -405,6 +446,8 @@ ol.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;ga
           const lu = data.updatedAt||0, ru = remote.updatedAt||0;
           if(lu > ru){ pushNow(); return; }
           if(lu === ru){ syncState(snap.metadata.fromCache ? "Çevrimdışı, sonra eşitlenecek" : "Ortak kayıt güncel"); return; }
+          const cl = counts(data), cr = counts(remote);
+          if(cr.s < cl.s || cr.p < cl.p) snapshot("Başka cihazdan gelen değişiklikten önce ("+cl.s+"→"+cr.s+" durak, "+cl.p+"→"+cr.p+" yolcu)");
           data = Object.assign({stops:[],people:[],routes:[],week:null,service:"Köseköy"}, remote);
           upgrade(); lastJson = dataJson(); writeLocal();
           if(!isEditing()) render();
@@ -418,6 +461,7 @@ ol.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;ga
     try{ await firebase.auth().signInWithEmailAndPassword($("lgEmail").value.trim(), $("lgPass").value); $("lgPass").value=""; }
     catch(e){ $("lgErr").textContent = /invalid|wrong|not-found|credential/i.test(e.code||"") ? "E-posta ya da şifre yanlış." : "Giriş yapılamadı ("+(e.code||"hata")+")."; }
   });
+  $("snapBtn").addEventListener("click",()=>{ const b=$("snapList"); b.classList.toggle("hidden"); if(!b.classList.contains("hidden")) renderSnaps(); });
   $("logoutBtn").addEventListener("click", ()=>{ if(confirm("Bu cihazdan çıkış yapılsın mı?")) firebase.auth().signOut(); });
 
   function migrateV1(state){
@@ -776,6 +820,7 @@ ol.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;ga
   }
 
   function applyRoster(){
+    snapshot("Haftalık liste uygulanmadan önce");
     if(data.week && data.week.entries.length && !confirm("Mevcut haftanın listesi ve işaretlemeleri silinip yenisi uygulanacak. Devam?")) return;
     const ents = [];
     review.forEach(r=>{
@@ -1248,7 +1293,7 @@ ol.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;ga
     review = rows.map(r=>{ const m=matchPerson(r.raw); return Object.assign(r,{target: m?m.id:"new"}); });
     renderReview();
   });
-  $("weekClear").addEventListener("click",()=>{ if(confirm("Bu haftanın listesi temizlensin mi? Yolcular ve duraklar silinmez.")){ data.week={label:"",created:Date.now(),entries:[]}; save(); renderWeek(); } });
+  $("weekClear").addEventListener("click",()=>{ if(confirm("Bu haftanın listesi temizlensin mi? Yolcular ve duraklar silinmez.")){ snapshot("Hafta temizlenmeden önce"); data.week={label:"",created:Date.now(),entries:[]}; save(); renderWeek(); } });
 
   $("pAdd").addEventListener("click",()=>{
     const name = $("pName").value.trim();
@@ -1388,6 +1433,7 @@ ol.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;ga
       else if(d.state) next={stops:migrateV1(d.state), people:[], routes:[], week:null, service:"Köseköy"};
       else throw new Error();
       if(!confirm("Dosyadaki kayıtlar mevcut verilere eklensin mi? Mevcut kayıtlar silinmez.")) return;
+      snapshot("Dosya yüklemeden önce");
       const before = {s:data.stops.length, p:data.people.length, r:data.routes.length, t:(data.trips||[]).length};
       data = mergeData(next, data); upgrade(); save(); render();
       alert("Eklendi: "+(data.stops.length-before.s)+" durak, "+(data.people.length-before.p)+" yolcu, "+(data.routes.length-before.r)+" rota, "+(data.trips.length-before.t)+" yolculuk kaydı.");
@@ -1396,6 +1442,7 @@ ol.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;ga
   });
 
   load();
+  try{ const l = JSON.parse(localStorage.getItem(SNAP_KEY)||"[]"); if(!l.length || Date.now()-l[0].t > 20*3600000) snapshot("Günlük"); }catch(e){}
   resumeTrip();
   render();
   initCloud();
