@@ -174,8 +174,14 @@ ol.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;ga
           <input type="time" id="tlTo" value="08:30" aria-label="Bitiş saati" style="flex:1 1 90px;font:inherit;color:var(--ink);background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 12px">
         </div>
         <div class="row" style="margin-top:8px"><button class="btn primary" id="tlRun">Bu aralıktaki duruşları çıkar</button></div>
+        <div class="row" style="margin-top:12px;align-items:center">
+          <span class="note" style="margin:0">Şu tarihten itibaren:</span>
+          <input type="date" id="tlSince" aria-label="Bu tarihten itibaren" style="flex:1 1 150px;font:inherit;color:var(--ink);background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 12px">
+        </div>
+        <div class="row" style="margin-top:8px"><button class="btn" id="tlAll">Fabrika gidişlerini bul</button></div>
         <p class="note warn" id="tlMsg" style="margin-top:8px"></p>
       </div>
+      <div id="tlTrips"></div>
       <div id="tripList" style="margin-top:12px"></div>
     </div>
 
@@ -1040,7 +1046,127 @@ ol.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;ga
     out.sort((x,y)=>x.t-y.t);
     return {stops:out, km, count:src.length, gpsMode: g.length>=10};
   }
-  $("tlOpen").addEventListener("click",()=>{ $("tlBox").classList.toggle("hidden"); if(!$("tlDate").value){ const d=new Date(); $("tlDate").value=d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0"); } });
+  // ---------- Fabrika gidişlerini bul ----------
+  const FAC_R = 400;
+  // Varış saati vardiya başlangıcından en fazla 90 dk önce, 15 dk sonra ise o vardiyanın gidişi sayılır
+  function shiftOf(t){
+    const d=new Date(t), m=d.getHours()*60+d.getMinutes();
+    const near = start => { let x = m - start; if(x > 720) x -= 1440; if(x < -720) x += 1440; return x >= -90 && x <= 15; };
+    return near(480)?"08":near(960)?"16":near(0)?"00":"";
+  }
+  function dayKey(t){ const d=new Date(t); return d.getFullYear()+"-"+(d.getMonth()+1)+"-"+d.getDate(); }
+  function arrivalsIn(src){
+    const out = []; let lastOut = null;
+    src.forEach(p=>{
+      const inF = dist(p,FACTORY) <= FAC_R;
+      if(inF && lastOut && p.t-lastOut.t < 20*60000 && (!out.length || p.t-out[out.length-1] > 90*60000)) out.push(p.t);
+      if(!inF) lastOut = p;
+    });
+    return out;
+  }
+  function findCommutes(){
+    const sinceV = $("tlSince").value, since = sinceV ? new Date(sinceV+"T00:00:00").getTime() : 0;
+    let arr = arrivalsIn(tl.gps).map(t=>({t, rough:false}));
+    arrivalsIn(tl.pts).forEach(t=>{ if(!arr.some(x=>Math.abs(x.t-t) < 90*60000)) arr.push({t, rough:true}); });
+    arr = arr.filter(x=>x.t >= since);
+    // 4 saatten uzun kalınan yerler (ev gibi) rota durağı sayılmaz
+    const homes = [];
+    tl.visits.forEach(v=>{ if(v.t1-v.t0 >= 4*3600000 && !homes.some(h=>dist(h,v)<150) && dist(v,FACTORY) > FAC_R) homes.push(v); });
+    arr.sort((a,b)=>a.t-b.t);
+    return arr.map(x=>{
+      const tA = x.t, a = tA - 180*60000;
+      const r = detectStops(tl, a, tA + 60000);
+      let st = r.stops.filter(o=>dist(o,FACTORY) > FAC_R && o.t < tA && !homes.some(h=>dist(h,o) < 150));
+      // Evden/son uzun bekleyişten sonraki duruşlar yolculuğun parçası
+      let k = -1; st.forEach((o,i)=>{ if(o.dur >= 8*60000) k = i; });
+      const home = k>=0 ? st[k] : null;
+      st = k>=0 ? st.slice(k+1) : st.filter(o=>o.t >= tA-120*60000);
+      return {tA, shift: shiftOf(tA), stops: st, start: home ? home.t+home.dur : (st[0]?st[0].t:tA), rough: x.rough || !r.gpsMode};
+    }).filter(c=>c.shift);
+  }
+  function commonStops(list){
+    const cl = [];
+    list.forEach(c=>c.stops.forEach(o=>{
+      const off = c.tA - o.t;
+      let g = cl.find(x=>dist({lat:x.sLat/x.n,lng:x.sLng/x.n}, o) < 80);
+      if(!g){ g = {sLat:0,sLng:0,n:0,days:new Set(),offs:[]}; cl.push(g); }
+      const dd=new Date(o.t); let mod = dd.getHours()*60+dd.getMinutes(); if(mod < 12*60 && new Date(c.tA).getHours() >= 12) mod += 1440;
+      g.sLat+=o.lat; g.sLng+=o.lng; g.n++; g.days.add(dayKey(c.tA)); g.offs.push(off); (g.mods=g.mods||[]).push(mod);
+    }));
+    return cl.filter(g=>g.days.size>=2).map(g=>{
+      const offs=g.offs.sort((a,b)=>a-b), med=offs[Math.floor(offs.length/2)];
+      const mods=g.mods.sort((a,b)=>a-b), mm=mods[Math.floor(mods.length/2)]%1440;
+      return {lat:g.sLat/g.n, lng:g.sLng/g.n, days:g.days.size, off:med, clock:String(Math.floor(mm/60)).padStart(2,"0")+":"+String(mm%60).padStart(2,"0")};
+    }).sort((a,b)=>b.off-a.off);
+  }
+  function routeLinksBox(stops, fromHere){
+    const box = el("div","go"); renderLinks(box, buildLinks(pointsFor(stops,"in"), fromHere), true); return box;
+  }
+  function saveRoute(name, shift, stops){
+    data.routes.push({id:uid(), name, shift, dir:"in", createdAt:Date.now(), stops: stops.map(o=>({lat:o.lat, lng:o.lng, label:o.label}))});
+    save(); setStatus("Rota saklandı: "+name+". Rotalar sekmesinde, Saklanan rotalar altında.");
+  }
+  function renderCommutes(list){
+    const box = $("tlTrips"); box.innerHTML = "";
+    if(!list.length){ box.appendChild(el("p","note warn","Dosyada fabrikaya varış bulunamadı.")); return; }
+    ["08","16","00"].forEach(sh=>{
+      const cs = list.filter(c=>c.shift===sh); if(!cs.length) return;
+      const sec = el("div","shiftblock");
+      const h = el("h3",null,SL[sh]+" vardiyası gidişleri"); h.appendChild(el("span",null,cs.length+" gün")); sec.appendChild(h);
+
+      const common = commonStops(cs);
+      if(common.length){
+        sec.appendChild(el("div","pax","Tekrarlayan duruşlar (en az 2 gün)"));
+        sec.appendChild(el("p","note","Farklı günlerde aynı yerde durduğun noktalar. Yolcu durakları büyük ihtimalle bunlar; trafik ışıkları da çıkabilir."));
+        common.forEach((o,i)=>{
+          const row = el("div","cand");
+          const near = data.stops.find(x=>dist(x,o) < NEAR_M);
+          row.appendChild(el("div",null,(i+1)+". genelde ~"+o.clock+" · "+o.days+" gün"));
+          if(near) row.appendChild(el("div","meta","Mevcut durak: "+stopLabel(near)));
+          const tools = el("div","tools");
+          const m = el("a",null,"Haritada gör"); m.href="https://www.google.com/maps/search/?api=1&query="+ll(o); m.target="_blank"; m.rel="noopener";
+          tools.appendChild(m);
+          if(!near){ tools.appendChild(btn("Durak olarak ekle",()=>{ insertStop(o.lat,o.lng,null,"",Date.now()); save(); renderCommutes(list); setStatus("Durak eklendi, güzergahta uygun yere kondu."); })); }
+          row.appendChild(tools); sec.appendChild(row);
+        });
+        sec.appendChild(routeLinksBox(common, ui.fromHere));
+        const sv = btn("Bu duruşlarla rotayı sakla",()=>saveRoute(SL[sh]+" gidiş (Zaman Çizelgesi, "+cs.length+" gün)", sh, common.map((o,i)=>Object.assign({label:"~"+o.clock+" · "+o.days+" gün"},o))),"btn");
+        sv.style.marginTop="6px"; sec.appendChild(sv);
+      }
+
+      const empty = cs.filter(c=>!c.stops.length).length;
+      sec.appendChild(el("div","pax","Günler"+(empty?" ("+empty+" günde duruş kaydı yok, gösterilmedi)":"")));
+      cs.filter(c=>c.stops.length).reverse().forEach(c=>{
+        const row = el("div","cand");
+        const d = new Date(c.tA);
+        row.appendChild(el("div",null, d.toLocaleDateString("tr-TR",{day:"2-digit",month:"2-digit",weekday:"short"})+" · varış "+hm(c.tA)+" · "+c.stops.length+" duruş"+(c.rough?" (yaklaşık)":"")));
+        if(c.stops.length){
+          row.appendChild(routeLinksBox(c.stops, ui.fromHere));
+          const tools = el("div","tools");
+          tools.append(
+            btn("Rota olarak sakla",()=>saveRoute(SL[sh]+" gidiş "+d.toLocaleDateString("tr-TR",{day:"2-digit",month:"2-digit"}), sh, c.stops.map(o=>Object.assign({label:hm(o.t)+(o.dur<15000?" kısa":" "+secs(o.dur))},o)))),
+            btn("Duruşları incele",()=>{
+              data.trips.unshift({id:uid(), start:c.start, end:c.tA, km:0, gaps:0, stops:c.stops.map(o=>Object.assign({}, o, {id:uid(), status:""})), source:"timeline"});
+              data.trips = data.trips.slice(0,20); save(); renderTrips(); window.scrollTo(0, $("tripList").offsetTop-20);
+            })
+          );
+          row.appendChild(tools);
+        }
+        sec.appendChild(row);
+      });
+      box.appendChild(sec);
+    });
+  }
+  $("tlAll").addEventListener("click",()=>{
+    $("tlMsg").textContent="";
+    if(!tl){ $("tlMsg").textContent="Önce dosyayı seç."; return; }
+    $("tlMsg").textContent="Aranıyor…";
+    setTimeout(()=>{ const list = findCommutes(); $("tlMsg").textContent=""; renderCommutes(list); },30);
+  });
+
+  $("tlOpen").addEventListener("click",()=>{ $("tlBox").classList.toggle("hidden");
+    if(!$("tlSince").value){ const d=new Date(Date.now()-14*86400000); $("tlSince").value=d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0"); }
+    if(!$("tlDate").value){ const d=new Date(); $("tlDate").value=d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0"); } });
   $("tlPick").addEventListener("click",()=>$("tlFile").click());
   $("tlFile").addEventListener("change", async e=>{
     const f=e.target.files[0]; if(!f) return;
