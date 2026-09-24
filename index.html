@@ -336,7 +336,10 @@ ol.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;ga
         $("logoutBtn").classList.toggle("hidden", !u);
         if(!u){ syncState("Giriş yapılmadı, bu telefonda", true); return; }
         syncState("Eşitleniyor…");
-        unsub = cloudDoc.onSnapshot(snap=>{
+        const slow = setTimeout(()=>{ if(!serverSeen) syncState("Sunucuya ulaşılamıyor. Firestore veritabanı oluşturuldu mu?", true); }, 15000);
+        let serverSeen = false;
+        unsub = cloudDoc.onSnapshot({includeMetadataChanges:true}, snap=>{
+          if(!snap.metadata.fromCache){ serverSeen = true; clearTimeout(slow); }
           if(snap.metadata.hasPendingWrites) return;
           cloudReady = true;
           const r = snap.exists ? snap.data() : null;
