@@ -277,6 +277,11 @@ ol.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;ga
         const old = localStorage.getItem(OLD_KEY);
         if(old){ data.stops = migrateV1(JSON.parse(old).state || {}); }
       }
+      // İlk sürümde kaydedilip taşınmamış duraklar varsa geri al
+      if(!data.stops.length){
+        const old = localStorage.getItem(OLD_KEY);
+        if(old){ const st = migrateV1(JSON.parse(old).state || {}); if(st.length){ data.stops = st; data.updatedAt = Date.now(); } }
+      }
       upgrade(); lastJson = dataJson(); writeLocal();
     }catch(e){}
   }
@@ -316,6 +321,29 @@ ol.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;ga
       .then(()=>syncState("Ortak kayıt güncel"))
       .catch(e=>syncState("Buluta yazılamadı ("+(e.code||"hata")+")", true));
   }
+  function byId(remoteArr, localArr){
+    const out = (remoteArr||[]).slice(), ids = new Set(out.map(x=>x.id));
+    (localArr||[]).forEach(x=>{ if(!ids.has(x.id)) out.push(x); });
+    return out;
+  }
+  function mergeData(local, remote){
+    const m = Object.assign({stops:[],people:[],routes:[],trips:[],week:null,service:"Köseköy"}, remote);
+    // Duraklar: bulutun sırası korunur, sadece bu cihazda olanlar güzergahta uygun yere eklenir
+    const saved = data; data = m; m.stops = (remote.stops||[]).slice();
+    const rid = new Set(m.stops.map(x=>x.id));
+    (local.stops||[]).forEach(st=>{ if(!rid.has(st.id) && !m.stops.some(x=>dist(x,st)<15)){ m.stops.splice(bestIndex(st),0,st); } });
+    data = saved;
+    m.people = byId(remote.people, local.people);
+    m.routes = byId(remote.routes, local.routes);
+    m.trips = byId(remote.trips, local.trips).sort((a,b)=>b.start-a.start).slice(0,20);
+    const lw = local.week, rw = remote.week;
+    const len = w => w && w.entries ? w.entries.length : 0;
+    if(!len(rw) && len(lw)) m.week = lw;
+    else if(len(lw) && len(rw) && (lw.created||0) > (rw.created||0)) m.week = lw;
+    m.service = remote.service || local.service || "Köseköy";
+    return m;
+  }
+
   async function initCloud(){
     if(!FIREBASE_CONFIG) return;
     $("backupNote").textContent = "Kayıtlar ortak kayıtta tutuluyor, her cihazda aynı. Yine de ara ara yedeği kendine göndermen iyi olur.";
@@ -337,14 +365,24 @@ ol.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;ga
         if(!u){ syncState("Giriş yapılmadı, bu telefonda", true); return; }
         syncState("Eşitleniyor…");
         const slow = setTimeout(()=>{ if(!serverSeen) syncState("Sunucuya ulaşılamıyor. Firestore veritabanı oluşturuldu mu?", true); }, 15000);
-        let serverSeen = false;
+        let serverSeen = false, merged = false;
         unsub = cloudDoc.onSnapshot({includeMetadataChanges:true}, snap=>{
           if(!snap.metadata.fromCache){ serverSeen = true; clearTimeout(slow); }
           if(snap.metadata.hasPendingWrites) return;
           cloudReady = true;
           const r = snap.exists ? snap.data() : null;
-          if(!r || !r.payload){ pushNow(); return; }
+          if(!r || !r.payload){ if(!snap.metadata.fromCache){ merged = true; data.updatedAt = Date.now(); pushNow(); } return; }
           const remote = JSON.parse(r.payload);
+          // Oturumun ilk sunucu verisinde iki tarafı birleştir, hiçbir cihazın kaydı kaybolmasın
+          if(!snap.metadata.fromCache && !merged){
+            merged = true;
+            const m = mergeData(data, remote);
+            data = m; upgrade(); lastJson = dataJson(); writeLocal();
+            if(dataJson() !== JSON.stringify(Object.assign({}, remote, {updatedAt:0}), REPL) || !remote.updatedAt){ data.updatedAt = Date.now(); writeLocal(); pushNow(); }
+            else { data.updatedAt = remote.updatedAt; writeLocal(); syncState("Ortak kayıt güncel"); }
+            if(!isEditing()) render();
+            return;
+          }
           const lu = data.updatedAt||0, ru = remote.updatedAt||0;
           if(lu > ru){ pushNow(); return; }
           if(lu === ru){ syncState(snap.metadata.fromCache ? "Çevrimdışı, sonra eşitlenecek" : "Ortak kayıt güncel"); return; }
