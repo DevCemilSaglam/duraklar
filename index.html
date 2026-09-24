@@ -870,11 +870,21 @@ ol.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;ga
 
     const list = $("routePreview"); list.innerHTML="";
     const noStop = riders.filter(p=>!stopFor(p,sh,dir));
-    if(noStop.length){
-      const li = el("li","empty warn","Durağı bilinmeyen yolcular (rotaya girmedi, arayıp yerini sorabilirsin): ");
-      noStop.forEach((p,i)=>{ if(i) li.appendChild(document.createTextNode(", ")); li.appendChild(nameWithTel(p)); });
-      list.appendChild(li);
-    }
+    // Durağı bilinmeyen yolcular da listede; aldığın yerde tek dokunuşla durak kaydedilir
+    noStop.forEach(p=>{
+      const li = el("li","stop"); const b = el("div");
+      b.append(el("div","pax","Durağı bilinmiyor"));
+      const mt = el("div","meta"); mt.appendChild(nameWithTel(p)); b.append(mt);
+      const tools = el("div","tools");
+      const here = btn(dir==="in"?"Buradan aldım":"Buraya bıraktım",()=>pinHere(p, dir, sh, here));
+      here.style.cssText="background:var(--amber);color:var(--amber-ink);border-color:var(--amber)";
+      const sel = el("select"); fillStopSelect(sel, "", "Mevcut durağa bağla");
+      sel.style.cssText="flex:1 1 150px;padding:6px 8px;font-size:14px;width:auto";
+      sel.addEventListener("change",()=>{ if(!sel.value) return; assignStop(p, dir, sh, sel.value); });
+      tools.append(here, sel); b.append(tools);
+      const num = el("div","num","?"); num.style.background="var(--muted)";
+      li.append(num, b); list.appendChild(li);
+    });
     const skipped = entries(sh).filter(e=>!(dir==="in"?e.in:e.out)).map(e=>person(e.pid).name);
     if(skipped.length) list.appendChild(el("li","empty",(dir==="in"?"Gidişte binmeyenler: ":"Dönüşte binmeyenler: ")+skipped.join(", ")));
 
@@ -886,6 +896,10 @@ ol.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;ga
       const mt = el("div","meta");
       ridersAt(s.id, sh, dir).forEach((p,i)=>{ if(i) mt.appendChild(document.createTextNode(", ")); mt.appendChild(nameWithTel(p, p.stopId!==s.id?" (eve bırakma)":"")); });
       b.append(mt);
+      const tools = el("div","tools");
+      const up = btn("Önce",()=>moveInRoute(ordered, i, -1, dir)); up.disabled = i===0;
+      const dn = btn("Sonra",()=>moveInRoute(ordered, i, 1, dir)); dn.disabled = i===ordered.length-1;
+      tools.append(up, dn); b.append(tools);
       li.append(el("div","num",i+1), b); list.appendChild(li);
     });
     if(dir==="in" && stops.length) addFactory("Varış");
@@ -895,6 +909,39 @@ ol.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;ga
     const d = new Date();
     $("rName").placeholder = SL[sh]+" "+(dir==="in"?"gidiş":"dönüş")+" "+d.toLocaleDateString("tr-TR",{day:"2-digit",month:"2-digit"});
     renderSaved();
+  }
+
+  // Rotada iki durağın yerini değiştir: ana güzergah sırasında da kalıcı olarak değişir
+  function moveInRoute(ordered, i, d, dir){
+    const a = ordered[i], b = ordered[i+d]; if(!a || !b) return;
+    const arr = data.stops, ia = arr.indexOf(a);
+    arr.splice(ia, 1);
+    const ib = arr.indexOf(b);
+    // gidişte liste ana sırayla aynı, dönüşte ters
+    const before = (dir==="in") ? d < 0 : d > 0;
+    arr.splice(before ? ib : ib+1, 0, a);
+    save(); renderRoutes();
+  }
+  function assignStop(p, dir, sh, stopId){
+    if(dir==="out" && p.stopId){ p.dropStopId = stopId; if(!p.dropExits.includes(EXIT[sh])) p.dropExits.push(EXIT[sh]); }
+    else p.stopId = stopId;
+    save(); renderRoutes();
+  }
+  function pinHere(p, dir, sh, b){
+    if(!("geolocation" in navigator)){ alert("Bu tarayıcı konum vermiyor."); return; }
+    b.disabled = true; b.textContent = "Konum alınıyor…";
+    navigator.geolocation.getCurrentPosition(pos=>{
+      const q = {lat:pos.coords.latitude, lng:pos.coords.longitude};
+      const near = data.stops.find(s=>dist(s,q) < NEAR_M);
+      let id;
+      if(near && confirm(stopLabel(near)+" durağına "+Math.round(dist(near,q))+" m uzaktasın. "+p.name+" bu durağa bağlansın mı?\n(İptal dersen yeni durak açılır)")) id = near.id;
+      else { const idx = insertStop(q.lat, q.lng, pos.coords.accuracy, "", Date.now()); data.stops[idx].name = p.name.split(" ")[0]+" durağı"; id = data.stops[idx].id; }
+      assignStop(p, dir, sh, id);
+      setStatus(p.name+" için durak kaydedildi. Adını Duraklar sekmesinden değiştirebilirsin.");
+    }, err=>{
+      b.disabled = false; b.textContent = dir==="in"?"Buradan aldım":"Buraya bıraktım";
+      alert(err.code===1 ? "Konum izni verilmedi." : "Konum alınamadı, tekrar dene.");
+    }, {enableHighAccuracy:true, timeout:15000, maximumAge:0});
   }
 
   function renderSaved(){
