@@ -163,6 +163,19 @@ ol.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;ga
       <p class="note">Kaydı başlat, normal şekilde sür. Durduğun yerler (20 sn ve üzeri) kendiliğinden işaretlenir. Sonra listeden durak olarak eklersin.</p>
       <div id="tripLive"></div>
       <button class="btn primary" id="tripBtn" style="width:100%;font-size:19px;padding:14px">Kaydı başlat</button>
+      <button class="btn" id="tlOpen" style="width:100%;margin-top:8px">Google Zaman Çizelgesi'nden al</button>
+      <div id="tlBox" class="hidden" style="margin-top:10px">
+        <p class="note">Telefonun Ayarlar → Konum → Konum hizmetleri → Zaman Çizelgesi → <b>Zaman Çizelgesi verilerini dışa aktar</b> ile aldığın dosyayı seç. Sonra gün ve saat aralığını gir.</p>
+        <div class="row"><button class="btn" id="tlPick">Dosya seç</button><span class="note" id="tlInfo" style="margin:auto 0">Dosya seçilmedi</span></div>
+        <input type="file" id="tlFile" accept=".json,application/json" hidden>
+        <div class="row" style="margin-top:8px">
+          <input type="date" id="tlDate" aria-label="Gün" style="flex:1 1 150px;font:inherit;color:var(--ink);background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 12px">
+          <input type="time" id="tlFrom" value="06:00" aria-label="Başlangıç saati" style="flex:1 1 90px;font:inherit;color:var(--ink);background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 12px">
+          <input type="time" id="tlTo" value="08:30" aria-label="Bitiş saati" style="flex:1 1 90px;font:inherit;color:var(--ink);background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 12px">
+        </div>
+        <div class="row" style="margin-top:8px"><button class="btn primary" id="tlRun">Bu aralıktaki duruşları çıkar</button></div>
+        <p class="note warn" id="tlMsg" style="margin-top:8px"></p>
+      </div>
       <div id="tripList" style="margin-top:12px"></div>
     </div>
 
@@ -911,7 +924,7 @@ ol.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;ga
       const open = tr.stops.filter(c=>!c.status).length;
       const det = el("details","trip"); if(ti===0 && open) det.open = true;
       const d = new Date(tr.start);
-      const sum = el("summary",null, d.toLocaleDateString("tr-TR",{day:"2-digit",month:"2-digit"})+" "+hm(tr.start)+"–"+hm(tr.end)+" · "+tr.km+" km · "+tr.stops.length+" duruş"+(open?" ("+open+" bekliyor)":""));
+      const sum = el("summary",null, (tr.source==="timeline"?"Zaman Çizelgesi · ":"")+d.toLocaleDateString("tr-TR",{day:"2-digit",month:"2-digit"})+" "+hm(tr.start)+"–"+hm(tr.end)+" · "+tr.km+" km · "+tr.stops.length+" duruş"+(open?" ("+open+" bekliyor)":""));
       det.appendChild(sum);
       if(tr.gaps) det.appendChild(el("div","meta warn","Bu kayıtta yaklaşık "+mins(tr.gaps)+" boşluk var (uygulama arka plandaydı)."));
       if(!tr.stops.length) det.appendChild(el("p","note","Bu yolculukta 20 sn'yi geçen duruş yok."));
@@ -945,6 +958,99 @@ ol.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;ga
       box.appendChild(det);
     });
   }
+  // ---------- Google Zaman Çizelgesi ----------
+  let tl = null;
+  function parseLL(v){
+    if(!v) return null;
+    if(typeof v==="object"){
+      if(v.latitudeE7!=null) return {lat:v.latitudeE7/1e7, lng:v.longitudeE7/1e7};
+      if(v.latE7!=null) return {lat:v.latE7/1e7, lng:v.lngE7/1e7};
+      if(v.latLng) return parseLL(v.latLng);
+      if(v.LatLng) return parseLL(v.LatLng);
+      return null;
+    }
+    const m = String(v).match(/(-?\d{1,2}\.\d+)[^\d-]+(-?\d{1,3}\.\d+)/);
+    return m ? {lat:parseFloat(m[1]), lng:parseFloat(m[2])} : null;
+  }
+  function tms(v){ const t = typeof v==="number" ? v : Date.parse(v); return isNaN(t) ? null : t; }
+  function extractTimeline(j){
+    const pts = [], visits = [];
+    const addP = (llv, t) => { const q=parseLL(llv), tt=tms(t); if(q && tt) pts.push({lat:q.lat, lng:q.lng, t:tt}); };
+    const addV = (llv, a, b) => { const q=parseLL(llv), ta=tms(a), tb=tms(b); if(q && ta && tb) visits.push({lat:q.lat, lng:q.lng, t0:ta, t1:tb}); };
+    const segs = Array.isArray(j) ? j : (j.semanticSegments || []);
+    segs.forEach(sg=>{
+      if(sg.visit && sg.visit.topCandidate) addV(sg.visit.topCandidate.placeLocation, sg.startTime, sg.endTime);
+      (sg.timelinePath||[]).forEach(p=>{
+        if(p.time) addP(p.point, p.time);
+        else if(p.durationMinutesOffsetFromStartTime!=null){ const t0=tms(sg.startTime); if(t0) addP(p.point, t0 + Number(p.durationMinutesOffsetFromStartTime)*60000); }
+      });
+    });
+    (j.rawSignals||[]).forEach(r=>{ const p=r.position; if(p && !(p.accuracyMeters>60)) addP(p.LatLng||p.latLng, p.timestamp); });
+    (j.timelineObjects||[]).forEach(o=>{
+      if(o.placeVisit) addV(o.placeVisit.location, o.placeVisit.duration && o.placeVisit.duration.startTimestamp, o.placeVisit.duration && o.placeVisit.duration.endTimestamp);
+      const a = o.activitySegment; if(a){ ((a.simplifiedRawPath||{}).points||[]).forEach(p=>addP(p, p.timestamp||p.timestampMs&&Number(p.timestampMs))); }
+    });
+    (j.locations||[]).forEach(p=>{ if(!(p.accuracy>60)) addP(p, p.timestamp || (p.timestampMs && Number(p.timestampMs))); });
+    pts.sort((a,b)=>a.t-b.t);
+    return {pts, visits};
+  }
+  function detectStops(pts, visits, a, b){
+    const inr = pts.filter(p=>p.t>=a && p.t<=b);
+    const out = []; let km = 0, prev = null, cl = null;
+    const close = (c, tEnd) => {
+      const dur = tEnd - c.t0; if(dur < STOP_MIN) return;
+      out.push({id:uid(), lat:c.sLat/c.n, lng:c.sLng/c.n, t:c.t0, dur, status:""});
+    };
+    inr.forEach(p=>{
+      if(prev){ const d=dist(prev,p); if(d>10) km += d/1000; }
+      prev = p;
+      if(!cl) cl = {n:1, sLat:p.lat, sLng:p.lng, t0:p.t, tl:p.t};
+      else if(dist({lat:cl.sLat/cl.n, lng:cl.sLng/cl.n}, p) <= STOP_R){ cl.n++; cl.sLat+=p.lat; cl.sLng+=p.lng; cl.tl=p.t; }
+      else { close(cl, cl.tl); cl = {n:1, sLat:p.lat, sLng:p.lng, t0:p.t, tl:p.t}; }
+    });
+    if(cl) close(cl, cl.tl);
+    visits.forEach(v=>{
+      const t0=Math.max(v.t0,a), t1=Math.min(v.t1,b); if(t1-t0 < STOP_MIN) return;
+      const ex = out.find(o=>dist(o,v) < 60 && o.t <= t1 && o.t+o.dur >= t0);
+      if(ex){ ex.t=Math.min(ex.t,t0); ex.dur=Math.max(ex.t+ex.dur,t1)-ex.t; }
+      else out.push({id:uid(), lat:v.lat, lng:v.lng, t:t0, dur:t1-t0, status:""});
+    });
+    out.sort((x,y)=>x.t-y.t);
+    // art arda aynı yerdeki duruşları birleştir
+    const merged = [];
+    out.forEach(o=>{ const l=merged[merged.length-1]; if(l && dist(l,o) < STOP_R+10 && o.t-(l.t+l.dur) < 60000){ l.dur=(o.t+o.dur)-l.t; } else merged.push(o); });
+    return {stops:merged, km, count:inr.length};
+  }
+  $("tlOpen").addEventListener("click",()=>{ $("tlBox").classList.toggle("hidden"); if(!$("tlDate").value){ const d=new Date(); $("tlDate").value=d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0"); } });
+  $("tlPick").addEventListener("click",()=>$("tlFile").click());
+  $("tlFile").addEventListener("change", async e=>{
+    const f=e.target.files[0]; if(!f) return;
+    $("tlInfo").textContent="Okunuyor…"; $("tlMsg").textContent="";
+    try{
+      tl = extractTimeline(JSON.parse(await f.text()));
+      if(!tl.pts.length && !tl.visits.length) throw new Error("bos");
+      const last = Math.max(tl.pts.length?tl.pts[tl.pts.length-1].t:0, ...tl.visits.map(v=>v.t1));
+      $("tlInfo").textContent = f.name+" · son kayıt "+new Date(last).toLocaleDateString("tr-TR");
+    }catch(err){ tl=null; $("tlInfo").textContent="Dosya seçilmedi"; $("tlMsg").textContent = err.message==="bos" ? "Dosyada konum verisi bulunamadı." : "Dosya okunamadı. Zaman Çizelgesi'nden dışa aktarılan .json dosyasını seç."; }
+    e.target.value="";
+  });
+  $("tlRun").addEventListener("click",()=>{
+    $("tlMsg").textContent="";
+    if(!tl){ $("tlMsg").textContent="Önce dosyayı seç."; return; }
+    const dStr=$("tlDate").value, f=$("tlFrom").value, t=$("tlTo").value;
+    if(!dStr||!f||!t){ $("tlMsg").textContent="Gün ve saatleri gir."; return; }
+    const a = new Date(dStr+"T"+f+":00").getTime();
+    let b = new Date(dStr+"T"+t+":00").getTime(); if(b<=a) b += 86400000;   // gece yarısını geçen aralık
+    const r = detectStops(tl.pts, tl.visits, a, b);
+    if(!r.count && !r.stops.length){ $("tlMsg").textContent="Bu aralıkta konum kaydı yok. Günü ve saati kontrol et."; return; }
+    data.trips.unshift({id:uid(), start:a, end:b, km:Math.round(r.km*10)/10, gaps:0, stops:r.stops, source:"timeline"});
+    data.trips = data.trips.slice(0,20);
+    save(); renderTrips();
+    $("tlMsg").textContent = "";
+    setStatus("Zaman Çizelgesi'nden "+r.stops.length+" duruş bulundu. Aşağıdaki listeden durak olarak ekleyebilirsin.");
+    $("tlBox").classList.add("hidden");
+  });
+
   $("tripBtn").addEventListener("click",()=>{
     if(rec){ if(confirm("Kayıt bitirilsin mi?")) stopTrip(false); }
     else startTrip();
