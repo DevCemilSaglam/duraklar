@@ -931,7 +931,8 @@ ol.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;ga
       tr.stops.forEach((c, ci)=>{
         const row = el("div","cand");
         const near = data.stops.find(s=>dist(s,c) < NEAR_M);
-        const head = el("div","pax", (ci+1)+". "+hm(c.t)+" · "+secs(c.dur)+" durdun");
+        const head = el("div","pax", (ci+1)+". "+hm(c.t)+" · "+(c.dur<15000 ? "kısa duruş" : secs(c.dur)+" durdun"));
+        if(tr.source==="timeline") head.appendChild(el("span","meta", c.visit ? "  (Google ziyareti)" : c.rough ? "  (yaklaşık)" : "  ("+(c.n||1)+" GPS kaydı)"));
         row.appendChild(head);
         if(c.status==="added"){ const st=data.stops.find(s=>s.id===c.stopId); row.appendChild(el("div","meta","Durak olarak eklendi"+(st?": "+stopLabel(st):""))); det.appendChild(row); return; }
         if(c.status==="ignored"){ row.appendChild(el("div","meta","Yoksayıldı")); row.style.opacity=".55";
@@ -974,52 +975,70 @@ ol.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;ga
   }
   function tms(v){ const t = typeof v==="number" ? v : Date.parse(v); return isNaN(t) ? null : t; }
   function extractTimeline(j){
-    const pts = [], visits = [];
-    const addP = (llv, t) => { const q=parseLL(llv), tt=tms(t); if(q && tt) pts.push({lat:q.lat, lng:q.lng, t:tt}); };
+    const pts = [], gps = [], visits = [];
+    const addP = (arr, llv, t, extra) => { const q=parseLL(llv), tt=tms(t); if(q && tt) arr.push(Object.assign({lat:q.lat, lng:q.lng, t:tt}, extra||{})); };
     const addV = (llv, a, b) => { const q=parseLL(llv), ta=tms(a), tb=tms(b); if(q && ta && tb) visits.push({lat:q.lat, lng:q.lng, t0:ta, t1:tb}); };
     const segs = Array.isArray(j) ? j : (j.semanticSegments || []);
     segs.forEach(sg=>{
       if(sg.visit && sg.visit.topCandidate) addV(sg.visit.topCandidate.placeLocation, sg.startTime, sg.endTime);
       (sg.timelinePath||[]).forEach(p=>{
-        if(p.time) addP(p.point, p.time);
-        else if(p.durationMinutesOffsetFromStartTime!=null){ const t0=tms(sg.startTime); if(t0) addP(p.point, t0 + Number(p.durationMinutesOffsetFromStartTime)*60000); }
+        if(p.time) addP(pts, p.point, p.time);
+        else if(p.durationMinutesOffsetFromStartTime!=null){ const t0=tms(sg.startTime); if(t0) addP(pts, p.point, t0 + Number(p.durationMinutesOffsetFromStartTime)*60000); }
       });
     });
-    (j.rawSignals||[]).forEach(r=>{ const p=r.position; if(p && !(p.accuracyMeters>60)) addP(p.LatLng||p.latLng, p.timestamp); });
+    // Ham GPS kayıtları (hız bilgisiyle). Wi-Fi/baz konumları araç içinde yanlış yer gösterebildiği için alınmaz.
+    (j.rawSignals||[]).forEach(r=>{ const p=r.position; if(!p) return;
+      if(String(p.source||"").toUpperCase()!=="GPS" || p.accuracyMeters>30) return;
+      addP(gps, p.LatLng||p.latLng, p.timestamp, {spd: typeof p.speedMetersPerSecond==="number" ? p.speedMetersPerSecond : null});
+    });
     (j.timelineObjects||[]).forEach(o=>{
       if(o.placeVisit) addV(o.placeVisit.location, o.placeVisit.duration && o.placeVisit.duration.startTimestamp, o.placeVisit.duration && o.placeVisit.duration.endTimestamp);
-      const a = o.activitySegment; if(a){ ((a.simplifiedRawPath||{}).points||[]).forEach(p=>addP(p, p.timestamp||p.timestampMs&&Number(p.timestampMs))); }
+      const a = o.activitySegment; if(a){ ((a.simplifiedRawPath||{}).points||[]).forEach(p=>addP(pts, p, p.timestamp||p.timestampMs&&Number(p.timestampMs))); }
     });
-    (j.locations||[]).forEach(p=>{ if(!(p.accuracy>60)) addP(p, p.timestamp || (p.timestampMs && Number(p.timestampMs))); });
-    pts.sort((a,b)=>a.t-b.t);
-    return {pts, visits};
+    (j.locations||[]).forEach(p=>{ if(!(p.accuracy>30)) addP(gps, p, p.timestamp || (p.timestampMs && Number(p.timestampMs)), {spd: typeof p.velocity==="number"?p.velocity:null}); });
+    pts.sort((a,b)=>a.t-b.t); gps.sort((a,b)=>a.t-b.t);
+    return {pts, gps, visits};
   }
-  function detectStops(pts, visits, a, b){
-    const inr = pts.filter(p=>p.t>=a && p.t<=b);
-    const out = []; let km = 0, prev = null, cl = null;
-    const close = (c, tEnd) => {
-      const dur = tEnd - c.t0; if(dur < STOP_MIN) return;
-      out.push({id:uid(), lat:c.sLat/c.n, lng:c.sLng/c.n, t:c.t0, dur, status:""});
-    };
-    inr.forEach(p=>{
-      if(prev){ const d=dist(prev,p); if(d>10) km += d/1000; }
-      prev = p;
-      if(!cl) cl = {n:1, sLat:p.lat, sLng:p.lng, t0:p.t, tl:p.t};
-      else if(dist({lat:cl.sLat/cl.n, lng:cl.sLng/cl.n}, p) <= STOP_R){ cl.n++; cl.sLat+=p.lat; cl.sLng+=p.lng; cl.tl=p.t; }
-      else { close(cl, cl.tl); cl = {n:1, sLat:p.lat, sLng:p.lng, t0:p.t, tl:p.t}; }
-    });
-    if(cl) close(cl, cl.tl);
-    visits.forEach(v=>{
+  function detectStops(tl, a, b){
+    const g = tl.gps.filter(p=>p.t>=a && p.t<=b);
+    const out = []; let km = 0;
+    let src = g;
+    if(g.length >= 10){
+      // GPS: hızı ~0 olan ardışık kayıtlar bir duruş sayılır. Kayıtlar ~40 sn arayla olduğu için kısa duruşlar tek kayıtla görünür.
+      let grp = null, prev = null;
+      const flush = () => { if(grp){ out.push({id:uid(), lat:grp.sLat/grp.n, lng:grp.sLng/grp.n, t:grp.t0, dur:grp.tl-grp.t0, status:"", n:grp.n}); grp=null; } };
+      g.forEach(p=>{
+        if(prev){ const d=dist(prev,p); if(d>10) km += d/1000; }
+        const still = p.spd!=null ? p.spd < 1.0 : (prev && dist(prev,p) < 15 && p.t-prev.t <= 90000);
+        if(still){
+          if(grp && dist({lat:grp.sLat/grp.n, lng:grp.sLng/grp.n}, p) < 60 && p.t-grp.tl <= 150000){ grp.n++; grp.sLat+=p.lat; grp.sLng+=p.lng; grp.tl=p.t; }
+          else { flush(); grp = {n:1, sLat:p.lat, sLng:p.lng, t0:p.t, tl:p.t}; }
+        } else flush();
+        prev = p;
+      });
+      flush();
+    } else {
+      // GPS yoksa Google'ın rota noktalarıyla yaklaşık tahmin
+      src = tl.pts.filter(p=>p.t>=a && p.t<=b);
+      let prev = null, cl = null;
+      const close = c => { if(c.n>=2 && c.tl-c.t0 >= STOP_MIN) out.push({id:uid(), lat:c.sLat/c.n, lng:c.sLng/c.n, t:c.t0, dur:c.tl-c.t0, status:"", n:c.n, rough:true}); };
+      src.forEach(p=>{
+        if(prev){ const d=dist(prev,p); if(d>10) km += d/1000; }
+        prev = p;
+        if(!cl) cl = {n:1, sLat:p.lat, sLng:p.lng, t0:p.t, tl:p.t};
+        else if(dist({lat:cl.sLat/cl.n, lng:cl.sLng/cl.n}, p) <= STOP_R){ cl.n++; cl.sLat+=p.lat; cl.sLng+=p.lng; cl.tl=p.t; }
+        else { close(cl); cl = {n:1, sLat:p.lat, sLng:p.lng, t0:p.t, tl:p.t}; }
+      });
+      if(cl) close(cl);
+    }
+    tl.visits.forEach(v=>{
       const t0=Math.max(v.t0,a), t1=Math.min(v.t1,b); if(t1-t0 < STOP_MIN) return;
-      const ex = out.find(o=>dist(o,v) < 60 && o.t <= t1 && o.t+o.dur >= t0);
-      if(ex){ ex.t=Math.min(ex.t,t0); ex.dur=Math.max(ex.t+ex.dur,t1)-ex.t; }
-      else out.push({id:uid(), lat:v.lat, lng:v.lng, t:t0, dur:t1-t0, status:""});
+      const ex = out.find(o=>dist(o,v) < 80 && o.t <= t1+60000 && o.t+o.dur >= t0-60000);
+      if(ex){ ex.visit=true; }
+      else out.push({id:uid(), lat:v.lat, lng:v.lng, t:t0, dur:t1-t0, status:"", visit:true});
     });
     out.sort((x,y)=>x.t-y.t);
-    // art arda aynı yerdeki duruşları birleştir
-    const merged = [];
-    out.forEach(o=>{ const l=merged[merged.length-1]; if(l && dist(l,o) < STOP_R+10 && o.t-(l.t+l.dur) < 60000){ l.dur=(o.t+o.dur)-l.t; } else merged.push(o); });
-    return {stops:merged, km, count:inr.length};
+    return {stops:out, km, count:src.length, gpsMode: g.length>=10};
   }
   $("tlOpen").addEventListener("click",()=>{ $("tlBox").classList.toggle("hidden"); if(!$("tlDate").value){ const d=new Date(); $("tlDate").value=d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0"); } });
   $("tlPick").addEventListener("click",()=>$("tlFile").click());
@@ -1028,8 +1047,8 @@ ol.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;ga
     $("tlInfo").textContent="Okunuyor…"; $("tlMsg").textContent="";
     try{
       tl = extractTimeline(JSON.parse(await f.text()));
-      if(!tl.pts.length && !tl.visits.length) throw new Error("bos");
-      const last = Math.max(tl.pts.length?tl.pts[tl.pts.length-1].t:0, ...tl.visits.map(v=>v.t1));
+      if(!tl.pts.length && !tl.gps.length && !tl.visits.length) throw new Error("bos");
+      const last = Math.max(tl.pts.length?tl.pts[tl.pts.length-1].t:0, tl.gps.length?tl.gps[tl.gps.length-1].t:0, ...tl.visits.map(v=>v.t1));
       $("tlInfo").textContent = f.name+" · son kayıt "+new Date(last).toLocaleDateString("tr-TR");
     }catch(err){ tl=null; $("tlInfo").textContent="Dosya seçilmedi"; $("tlMsg").textContent = err.message==="bos" ? "Dosyada konum verisi bulunamadı." : "Dosya okunamadı. Zaman Çizelgesi'nden dışa aktarılan .json dosyasını seç."; }
     e.target.value="";
@@ -1041,13 +1060,13 @@ ol.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;ga
     if(!dStr||!f||!t){ $("tlMsg").textContent="Gün ve saatleri gir."; return; }
     const a = new Date(dStr+"T"+f+":00").getTime();
     let b = new Date(dStr+"T"+t+":00").getTime(); if(b<=a) b += 86400000;   // gece yarısını geçen aralık
-    const r = detectStops(tl.pts, tl.visits, a, b);
+    const r = detectStops(tl, a, b);
     if(!r.count && !r.stops.length){ $("tlMsg").textContent="Bu aralıkta konum kaydı yok. Günü ve saati kontrol et."; return; }
     data.trips.unshift({id:uid(), start:a, end:b, km:Math.round(r.km*10)/10, gaps:0, stops:r.stops, source:"timeline"});
     data.trips = data.trips.slice(0,20);
     save(); renderTrips();
     $("tlMsg").textContent = "";
-    setStatus("Zaman Çizelgesi'nden "+r.stops.length+" duruş bulundu. Aşağıdaki listeden durak olarak ekleyebilirsin.");
+    setStatus("Zaman Çizelgesi'nden "+r.stops.length+" duruş bulundu"+(r.gpsMode?" (GPS kayıtlarından).":". Bu aralıkta GPS kaydı az, konumlar yaklaşık.")+" Aşağıdaki listeden durak olarak ekleyebilirsin.");
     $("tlBox").classList.add("hidden");
   });
 
