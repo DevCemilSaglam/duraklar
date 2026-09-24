@@ -443,6 +443,13 @@ ol.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;ga
   function setStatus(msg, err){ const s=$("status"); s.textContent=msg||""; s.classList.toggle("err",!!err); }
   function el(tag, cls, text){ const e=document.createElement(tag); if(cls) e.className=cls; if(text!=null) e.textContent=text; return e; }
   function btn(label, fn, cls){ const b=el("button",cls,label); b.type="button"; b.addEventListener("click",fn); return b; }
+  function telHref(ph){ let d=(ph||"").replace(/\D/g,""); if(d.startsWith("90")) d=d.slice(2); if(!d.startsWith("0")) d="0"+d; return "tel:"+d; }
+  function nameWithTel(p, suffix){
+    const f = document.createDocumentFragment();
+    f.appendChild(document.createTextNode(p.name+(suffix||"")));
+    if(p.phone){ const a=el("a",null," ☎"); a.href=telHref(p.phone); a.setAttribute("aria-label",p.name+" ara"); a.style.cssText="color:var(--sign);text-decoration:none;font-weight:600"; f.appendChild(a); }
+    return f;
+  }
   function stopLabel(s){ const i=data.stops.indexOf(s); return s.name || ("Durak "+(i+1)); }
   function person(id){ return data.people.find(p=>p.id===id); }
   function entries(shift){ return (data.week?data.week.entries:[]).filter(e=>e.shift===shift && person(e.pid)); }
@@ -630,6 +637,12 @@ ol.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;ga
       sel.addEventListener("change",()=>{ p.stopId=sel.value; save(); sel.style.borderColor = p.stopId?"":"var(--danger)"; });
       if(!p.stopId) sel.style.borderColor="var(--danger)";
 
+      const phRow = el("div","row"); phRow.style.marginTop="6px";
+      const ph = el("input"); ph.type="tel"; ph.value=p.phone||""; ph.placeholder="Telefon"; ph.setAttribute("aria-label",p.name+" telefon");
+      ph.style.cssText="flex:1 1 140px;font:inherit;color:var(--ink);background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:8px 12px;min-width:0";
+      ph.addEventListener("change",()=>{ p.phone=ph.value.trim(); save(); });
+      phRow.appendChild(ph);
+      if(p.phone){ const call=el("a","btn","Ara"); call.href=telHref(p.phone); call.style.textDecoration="none"; phRow.appendChild(call); }
       const wk = el("div","where", weekText(p.id)); wk.style.marginTop="6px";
 
       const hasDrop = !!p.dropStopId || p.dropExits.length;
@@ -654,7 +667,7 @@ ol.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;ga
       dropBox.append(dsel, exits, hint);
       if(p.dropStopId && !p.dropExits.length) dropBox.appendChild(el("p","note warn","Çıkış saati seçilmedi, şu an hiçbir rotada kullanılmıyor."));
 
-      li.append(top, sel, wk, toggle, dropBox);
+      li.append(top, sel, phRow, wk, toggle, dropBox);
       list.appendChild(li);
     });
   }
@@ -674,7 +687,7 @@ ol.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;ga
         const p = person(e.pid);
         const row = el("div","entry");
         const top = el("div","top");
-        const nm = el("span",null,p.name); nm.style.fontWeight="600";
+        const nm = el("span"); nm.appendChild(nameWithTel(p)); nm.style.fontWeight="600";
         if(!p.stopId) nm.appendChild(el("span","tag","durak yok"));
         if(entriesOf(p.id).length>1) nm.appendChild(el("span","tag","mesai"));
         top.append(nm, btn("Çıkar",()=>{ data.week.entries = data.week.entries.filter(x=>x!==e); save(); renderWeek(); },"x"));
@@ -717,7 +730,13 @@ ol.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;ga
       }
       if(!shift) return;
       let name = "";
-      if(tableMode){
+      const cellsAll = t.split(/\t|\s{2,}|\|/).map(x=>x.trim()).filter(Boolean);
+      const phoneCell = cellsAll.find(c=>/^(\+?90\s*)?0?\s*5\d{2}[\s\d]{7,12}$/.test(c));
+      const phone = phoneCell ? phoneCell.replace(/\s+/g," ").trim() : "";
+      if(h && !tableMode && cellsAll.length > 1){
+        // "00:00-08:00 <TAB> AD SOYAD <TAB> telefon" biçimi
+        name = cellsAll.filter(c=>!/\d{1,2}[:.]?\d{2}\s*[-–]\s*\d{1,2}/.test(c) && c!==phoneCell && /\p{L}{2,}/u.test(c))[0] || "";
+      } else if(tableMode){
         const cells = t.split(/\t|\s{2,}|\|/).map(x=>x.trim()).filter(Boolean);
         const ci = cells.findIndex(svHit);
         if(ci>0) name = cells.slice(0,ci).join(" ");
@@ -725,9 +744,9 @@ ol.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;ga
       } else if(!h) name = t;
       name = cleanName(name);
       if(name.replace(/ /g,"").length < 3) return;
-      if(/^(servis|sürücü|surucu|isim|plaka)/i.test(name)) return;
+      if(/^(servis|sürücü|surucu|isim|plaka|yolcu|vardiya|telefon)/i.test(name)) return;
       if(out.some(o=>o.shift===shift && fold(o.raw)===fold(name))) return;
-      out.push({shift, raw:name});
+      out.push({shift, raw:name, phone});
     });
     return out;
   }
@@ -742,7 +761,7 @@ ol.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;ga
       box.appendChild(el("div","pax",SR[sh]+" ("+rows.length+")"));
       rows.forEach(r=>{
         const row = el("div","review");
-        row.appendChild(el("span","raw",r.raw));
+        row.appendChild(el("span","raw",r.raw+(r.phone?"  ·  "+r.phone:"")));
         const sel = el("select"); sel.setAttribute("aria-label", r.raw+" eşleşmesi");
         const oNew = el("option",null,"Yeni yolcu olarak ekle"); oNew.value="new"; sel.appendChild(oNew);
         data.people.slice().sort((a,b)=>a.name.localeCompare(b.name,"tr")).forEach(p=>{ const o=el("option",null,"= "+p.name); o.value=p.id; sel.appendChild(o); });
@@ -766,6 +785,12 @@ ol.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;ga
         const ex = data.people.find(p=>fold(p.name)===fold(r.raw));
         if(ex) pid = ex.id;
         else { pid = uid(); data.people.push({id:pid, name:r.raw, stopId:"", dropStopId:"", dropExits:[]}); }
+      }
+      const pp = person(pid);
+      if(pp){
+        if(r.phone) pp.phone = r.phone;
+        // Listede Türkçe karakterli tam ad varsa onu kullan
+        if(fold(pp.name)===fold(r.raw) && /[çğıöşüÇĞİÖŞÜ]/.test(r.raw) && !/[çğıöşüÇĞİÖŞÜ]/.test(pp.name)) pp.name = r.raw;
       }
       if(!ents.some(e=>e.pid===pid && e.shift===r.shift)) ents.push({pid, shift:r.shift, in:true, out:true});
     });
@@ -800,7 +825,11 @@ ol.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;ga
 
     const list = $("routePreview"); list.innerHTML="";
     const noStop = riders.filter(p=>!stopFor(p,sh,dir));
-    if(noStop.length) list.appendChild(el("li","empty warn","Durağı seçilmemiş yolcular rotaya girmedi: "+noStop.map(p=>p.name).join(", ")));
+    if(noStop.length){
+      const li = el("li","empty warn","Durağı bilinmeyen yolcular (rotaya girmedi, arayıp yerini sorabilirsin): ");
+      noStop.forEach((p,i)=>{ if(i) li.appendChild(document.createTextNode(", ")); li.appendChild(nameWithTel(p)); });
+      list.appendChild(li);
+    }
     const skipped = entries(sh).filter(e=>!(dir==="in"?e.in:e.out)).map(e=>person(e.pid).name);
     if(skipped.length) list.appendChild(el("li","empty",(dir==="in"?"Gidişte binmeyenler: ":"Dönüşte binmeyenler: ")+skipped.join(", ")));
 
@@ -809,7 +838,9 @@ ol.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;ga
     ordered.forEach((s,i)=>{
       const li = el("li","stop"); const b = el("div");
       b.append(el("div","pax",stopLabel(s)));
-      b.append(el("div","meta",ridersAt(s.id, sh, dir).map(p=>p.name+(p.stopId!==s.id?" (eve bırakma)":"")).join(", ")));
+      const mt = el("div","meta");
+      ridersAt(s.id, sh, dir).forEach((p,i)=>{ if(i) mt.appendChild(document.createTextNode(", ")); mt.appendChild(nameWithTel(p, p.stopId!==s.id?" (eve bırakma)":"")); });
+      b.append(mt);
       li.append(el("div","num",i+1), b); list.appendChild(li);
     });
     if(dir==="in" && stops.length) addFactory("Varış");
@@ -1356,8 +1387,10 @@ ol.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;ga
       if(d.data && Array.isArray(d.data.stops)) next=Object.assign({stops:[],people:[],routes:[],week:null,service:"Köseköy"}, d.data);
       else if(d.state) next={stops:migrateV1(d.state), people:[], routes:[], week:null, service:"Köseköy"};
       else throw new Error();
-      if(!confirm("Mevcut veriler yedektekilerle değiştirilsin mi?")) return;
-      data=next; upgrade(); save(); render(); alert("Yedek yüklendi.");
+      if(!confirm("Dosyadaki kayıtlar mevcut verilere eklensin mi? Mevcut kayıtlar silinmez.")) return;
+      const before = {s:data.stops.length, p:data.people.length, r:data.routes.length, t:(data.trips||[]).length};
+      data = mergeData(next, data); upgrade(); save(); render();
+      alert("Eklendi: "+(data.stops.length-before.s)+" durak, "+(data.people.length-before.p)+" yolcu, "+(data.routes.length-before.r)+" rota, "+(data.trips.length-before.t)+" yolculuk kaydı.");
     }catch(err){ alert("Bu dosya okunamadı. Uygulamadan indirilen .json yedeği seç."); }
     e.target.value="";
   });
