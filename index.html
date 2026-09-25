@@ -159,7 +159,9 @@ ol.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;ga
     <div class="status" id="status" role="status" aria-live="polite"></div>
 
     <div class="card" id="tripCard">
-      <h2>Yolculuk kaydı</h2>
+      <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px">
+        <h2>Yolculuk kaydı</h2><a href="#stopsAnchor" style="color:var(--sign);font-weight:600;font-size:15px;text-decoration:none">Kayıtlı duraklar ↓</a>
+      </div>
       <p class="note">Kaydı başlat, normal şekilde sür. Durduğun yerler (20 sn ve üzeri) kendiliğinden işaretlenir. Sonra listeden durak olarak eklersin.</p>
       <div id="tripLive"></div>
       <button class="btn primary" id="tripBtn" style="width:100%;font-size:19px;padding:14px">Kaydı başlat</button>
@@ -197,8 +199,8 @@ ol.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;ga
       <div id="importPreview"></div>
     </div>
 
-    <div class="listhead"><h2>Güzergah sırası</h2><span id="stopCount"></span></div>
-    <p class="note">Durakları İzmit'ten fabrikaya giderken uğradığın sırayla tut. Vardiya rotaları bu sıradan oluşturulur.</p>
+    <div class="listhead" id="stopsAnchor"><h2>Kayıtlı duraklar</h2><span id="stopCount"></span></div>
+    <p class="note">Rotalar bu listeden oluşur. Yukarıdaki yolculuk kayıtlarındaki "… durdun" satırları sadece aday; <b>Durak olarak ekle</b> deyince buraya gelir. Sıra: İzmit'ten fabrikaya giderken uğradığın sıra.</p>
     <ol class="list" id="stopList"></ol>
   </section>
 
@@ -450,7 +452,7 @@ ol.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;ga
           if(cr.s < cl.s || cr.p < cl.p) snapshot("Başka cihazdan gelen değişiklikten önce ("+cl.s+"→"+cr.s+" durak, "+cl.p+"→"+cr.p+" yolcu)");
           data = Object.assign({stops:[],people:[],routes:[],week:null,service:"Köseköy"}, remote);
           upgrade(); lastJson = dataJson(); writeLocal();
-          if(!isEditing()) render();
+          if(!isEditing()) keepScroll(render);
           syncState("Ortak kayıt güncel");
         }, e=>syncState("Bağlantı hatası ("+(e.code||"")+")", true));
       });
@@ -1014,7 +1016,8 @@ ol.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;ga
     if(wakeLock){ try{ wakeLock.release(); }catch(e){} wakeLock=null; }
     if(rec && !discard){
       if(rec.cl) closeCluster(rec.cl, Math.min(Date.now(), rec.cl.tl + 15000));
-      data.trips.unshift({id:uid(), start:rec.start, end:Date.now(), km:Math.round(rec.km*10)/10, gaps:rec.gaps, stops:rec.stops});
+      const nid = uid(); openTrips.add(nid);
+      data.trips.unshift({id:nid, start:rec.start, end:Date.now(), km:Math.round(rec.km*10)/10, gaps:rec.gaps, stops:rec.stops});
       data.trips = data.trips.slice(0, 20);
       save();
     }
@@ -1046,12 +1049,16 @@ ol.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;ga
     box.appendChild(live);
   }
 
+  const openTrips = new Set();
+  function keepScroll(fn){ const y = window.scrollY; fn(); try{ window.scrollTo(0, y); }catch(e){} }
   function renderTrips(){
     renderLive();
     const box = $("tripList"); box.innerHTML="";
+    if(data.trips.length) box.appendChild(el("div","pax","Yolculuk kayıtları · aday duruşlar"));
     data.trips.forEach((tr, ti)=>{
       const open = tr.stops.filter(c=>!c.status).length;
-      const det = el("details","trip"); if(ti===0 && open) det.open = true;
+      const det = el("details","trip"); det.open = openTrips.has(tr.id);
+      det.addEventListener("toggle",()=>{ if(det.open) openTrips.add(tr.id); else openTrips.delete(tr.id); });
       const d = new Date(tr.start);
       const sum = el("summary",null, (tr.source==="timeline"?"Zaman Çizelgesi · ":"")+d.toLocaleDateString("tr-TR",{day:"2-digit",month:"2-digit"})+" "+hm(tr.start)+"–"+hm(tr.end)+" · "+tr.km+" km · "+tr.stops.length+" duruş"+(open?" ("+open+" bekliyor)":""));
       det.appendChild(sum);
@@ -1065,25 +1072,25 @@ ol.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;ga
         row.appendChild(head);
         if(c.status==="added"){ const st=data.stops.find(s=>s.id===c.stopId); row.appendChild(el("div","meta","Durak olarak eklendi"+(st?": "+stopLabel(st):""))); det.appendChild(row); return; }
         if(c.status==="ignored"){ row.appendChild(el("div","meta","Yoksayıldı")); row.style.opacity=".55";
-          const tl=el("div","tools"); tl.append(btn("Geri al",()=>{ c.status=""; save(); renderTrips(); })); row.appendChild(tl); det.appendChild(row); return; }
+          const tl=el("div","tools"); tl.append(btn("Geri al",()=>{ c.status=""; save(); keepScroll(renderTrips); })); row.appendChild(tl); det.appendChild(row); return; }
         if(near) row.appendChild(el("div","meta","Mevcut durağa yakın: "+stopLabel(near)+" ("+Math.round(dist(near,c))+" m)"));
         const inp = el("input"); inp.type="text"; inp.placeholder="Durak adı (boş bırakabilirsin)"; inp.style.marginTop="6px";
         const tools = el("div","tools");
         const add = btn("Durak olarak ekle",()=>{
           const idx = insertStop(c.lat, c.lng, null, inp.value.trim(), c.t);
           c.status="added"; c.stopId = data.stops[idx].id;
-          save(); renderTrips(); renderStops();
+          save(); keepScroll(renderStops);
           setStatus("Durak eklendi, güzergahta uygun yere kondu.");
         });
         add.style.cssText="background:var(--sign);color:var(--sign-ink);border-color:var(--sign)";
         const map = el("a",null,"Haritada gör"); map.href="https://www.google.com/maps/search/?api=1&query="+ll(c); map.target="_blank"; map.rel="noopener";
-        const ign = btn("Yoksay",()=>{ c.status="ignored"; save(); renderTrips(); });
+        const ign = btn("Yoksay",()=>{ c.status="ignored"; save(); keepScroll(renderTrips); });
         tools.append(add, map, ign);
         row.append(inp, tools);
         det.appendChild(row);
       });
       const tl = el("div","tools");
-      tl.append(btn("Bu kaydı sil",()=>{ if(confirm("Bu yolculuk kaydı silinsin mi? Eklediğin duraklar silinmez.")){ data.trips.splice(ti,1); save(); renderTrips(); } },"del"));
+      tl.append(btn("Bu kaydı sil",()=>{ if(confirm("Bu yolculuk kaydı silinsin mi? Eklediğin duraklar silinmez.")){ data.trips.splice(ti,1); save(); keepScroll(renderTrips); } },"del"));
       det.appendChild(tl);
       box.appendChild(det);
     });
@@ -1269,7 +1276,8 @@ ol.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;ga
           tools.append(
             btn("Rota olarak sakla",()=>saveRoute(SL[sh]+" gidiş "+d.toLocaleDateString("tr-TR",{day:"2-digit",month:"2-digit"}), sh, c.stops.map(o=>Object.assign({label:hm(o.t)+(o.dur<15000?" kısa":" "+secs(o.dur))},o)))),
             btn("Duruşları incele",()=>{
-              data.trips.unshift({id:uid(), start:c.start, end:c.tA, km:0, gaps:0, stops:c.stops.map(o=>Object.assign({}, o, {id:uid(), status:""})), source:"timeline"});
+              const nid = uid(); openTrips.add(nid);
+              data.trips.unshift({id:nid, start:c.start, end:c.tA, km:0, gaps:0, stops:c.stops.map(o=>Object.assign({}, o, {id:uid(), status:""})), source:"timeline"});
               data.trips = data.trips.slice(0,20); save(); renderTrips(); window.scrollTo(0, $("tripList").offsetTop-20);
             })
           );
@@ -1311,7 +1319,8 @@ ol.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;ga
     let b = new Date(dStr+"T"+t+":00").getTime(); if(b<=a) b += 86400000;   // gece yarısını geçen aralık
     const r = detectStops(tl, a, b);
     if(!r.count && !r.stops.length){ $("tlMsg").textContent="Bu aralıkta konum kaydı yok. Günü ve saati kontrol et."; return; }
-    data.trips.unshift({id:uid(), start:a, end:b, km:Math.round(r.km*10)/10, gaps:0, stops:r.stops, source:"timeline"});
+    const nid = uid(); openTrips.add(nid);
+    data.trips.unshift({id:nid, start:a, end:b, km:Math.round(r.km*10)/10, gaps:0, stops:r.stops, source:"timeline"});
     data.trips = data.trips.slice(0,20);
     save(); renderTrips();
     $("tlMsg").textContent = "";
