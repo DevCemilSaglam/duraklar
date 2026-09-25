@@ -230,6 +230,11 @@ ol.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;ga
       <button data-d="in" aria-pressed="true">Fabrikaya</button>
       <button data-d="out" aria-pressed="false">Eve dönüş</button>
     </div>
+    <div class="row" style="align-items:center;margin-bottom:6px">
+      <button class="btn" id="rPrev" aria-label="Önceki gün" style="padding:8px 14px">‹</button>
+      <div id="rDayLbl" style="flex:1;text-align:center;font-weight:600"></div>
+      <button class="btn" id="rNext" aria-label="Sonraki gün" style="padding:8px 14px">›</button>
+    </div>
     <label class="check"><input type="checkbox" id="fromHere" checked> Rotayı bulunduğum yerden başlat</label>
 
     <div class="listhead"><h2 id="rTitle">Rota</h2><span id="rCount"></span></div>
@@ -532,7 +537,21 @@ ol.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;ga
     if(dir==="out" && p.dropStopId && (p.dropExits||[]).includes(EXIT[shift])) return p.dropStopId;
     return p.stopId;
   }
-  function riding(shift, dir){ return entries(shift).filter(e=>dir==="in"?e.in:e.out).map(e=>person(e.pid)); }
+  // ---------- gün / izin ----------
+  const WD = ["Paz","Pzt","Sal","Çar","Per","Cum","Cmt"];
+  function dstr(d){ return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0"); }
+  function dayOf(ds){ return new Date(ds+"T12:00:00"); }
+  function dayLabel(ds){ const d=dayOf(ds); return d.toLocaleDateString("tr-TR",{day:"2-digit",month:"2-digit"})+" "+WD[d.getDay()]; }
+  let rDaySel = null;   // null: otomatik
+  // Rotanın günü = vardiyanın başladığı gün. 00 vardiyası öğleden sonra bakılıyorsa gece yarısından sonraki gündür.
+  function routeDay(){
+    if(rDaySel) return rDaySel;
+    const n = new Date();
+    if(ui.rShift==="00" && n.getHours() >= 12) n.setDate(n.getDate()+1);
+    return dstr(n);
+  }
+  function absent(p, ds){ return (p.offDates||[]).includes(ds) || (p.offDays||[]).includes(dayOf(ds).getDay()); }
+  function riding(shift, dir){ const ds = routeDay(); return entries(shift).filter(e=>dir==="in"?e.in:e.out).map(e=>person(e.pid)).filter(p=>!absent(p, ds)); }
   function ridersAt(stopId, shift, dir){ return riding(shift, dir).filter(p=>stopFor(p,shift,dir)===stopId); }
   function routeStops(shift, dir){ return data.stops.filter(s=>ridersAt(s.id, shift, dir).length); }
 
@@ -607,7 +626,12 @@ ol.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;ga
   }
 
   function weekText(pid){
+    const pp = person(pid), extra = pp && (pp.offDays||[]).length ? " · "+pp.offDays.slice().sort((a,b)=>((a+6)%7)-((b+6)%7)).map(k=>WD[k]).join(", ")+" günleri gelmiyor" : "";
     const es = entriesOf(pid);
+    if(extra && es.length) return weekTextBase(es)+extra;
+    return weekTextBase(es);
+  }
+  function weekTextBase(es){
     if(!es.length) return "Bu hafta listede yok";
     return "Bu hafta: "+es.map(e=>SL[e.shift]+(e.in&&e.out?"":e.in?" (sadece gidiş)":e.out?" (sadece dönüş)":" (binmiyor)")).join(", ");
   }
@@ -627,7 +651,7 @@ ol.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;ga
       inp.addEventListener("keydown",e=>{ if(e.key==="Enter") inp.blur(); });
 
       const pax = data.people.filter(p=>p.stopId===s.id).map(p=>p.name)
-        .concat(data.people.filter(p=>p.dropStopId===s.id && p.dropExits.length).map(p=>p.name+" (iniş: "+p.dropExits.map(x=>SL[x]).join(", ")+" çıkışı)"));
+        .concat(data.people.filter(p=>p.dropStopId===s.id && p.dropExits.length).map(p=>p.name+" (iniş"+(p.dropExits.length===3?"":": "+p.dropExits.map(x=>SL[x]).join(", ")+" çıkışı")+")"));
       const paxEl = el("div","pax", pax.length ? pax.join(", ") : "Yolcu bağlı değil");
       if(!pax.length) paxEl.style.color="var(--muted)";
 
@@ -694,26 +718,52 @@ ol.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;ga
       const hasDrop = !!p.dropStopId || p.dropExits.length;
       const toggle = el("label","check"); toggle.style.fontSize="15px";
       const tcb = el("input"); tcb.type="checkbox"; tcb.checked = hasDrop || !!p._openDrop;
-      toggle.append(tcb, document.createTextNode(" Eve dönüşte farklı yere bırak"));
+      toggle.append(tcb, document.createTextNode(" İndiği durak farklı"));
       const dropBox = el("div"); dropBox.classList.toggle("hidden", !tcb.checked);
       tcb.addEventListener("change",()=>{
         if(tcb.checked){ p._openDrop=true; dropBox.classList.remove("hidden"); }
         else { p.dropStopId=""; p.dropExits=[]; delete p._openDrop; save(); renderPeople(); }
       });
-      const dsel = el("select"); fillStopSelect(dsel, p.dropStopId, "Bırakılacak durak seç");
+      const dsel = el("select"); fillStopSelect(dsel, p.dropStopId, "İniş durağını seç");
       dsel.setAttribute("aria-label", p.name+" bırakma durağı");
-      dsel.addEventListener("change",()=>{ p.dropStopId=dsel.value; save(); });
+      dsel.addEventListener("change",()=>{
+        p.dropStopId=dsel.value;
+        if(p.dropStopId && !p.dropExits.length) p.dropExits=["16","00","08"];   // varsayılan: tüm dönüşler
+        p._openDrop=true; save(); renderPeople();
+      });
       const exits = el("div","mini"); exits.style.gridTemplateColumns="repeat(3,1fr)";
       [["16","16:00 çıkışı"],["00","00:00 çıkışı"],["08","08:00 çıkışı"]].forEach(([v,l])=>{
         const on = p.dropExits.includes(v);
         const b = btn(l,()=>{ p.dropExits = on ? p.dropExits.filter(x=>x!==v) : p.dropExits.concat(v); p._openDrop=true; save(); renderPeople(); });
         b.style.fontSize="13px"; b.setAttribute("aria-pressed", on?"true":"false"); exits.appendChild(b);
       });
-      const hint = el("p","note","Seçtiğin çıkış saatlerinde bu duraktan indirilir, diğer saatlerde normal durağında iner."); hint.style.margin="6px 0 0";
+      const hint = el("p","note","Seçili çıkışlarda bu durakta iner (varsayılan: hepsi). Sadece belirli bir çıkışta farklıysa diğerlerinin işaretini kaldır."); hint.style.margin="6px 0 0";
       dropBox.append(dsel, exits, hint);
       if(p.dropStopId && !p.dropExits.length) dropBox.appendChild(el("p","note warn","Çıkış saati seçilmedi, şu an hiçbir rotada kullanılmıyor."));
 
-      li.append(top, sel, phRow, wk, toggle, dropBox);
+      // Gelmediği günler
+      const offBox = el("div"); offBox.style.marginTop="8px";
+      offBox.appendChild(el("div","where","Servise geldiği günler (gelmediği günün işaretini kaldır)"));
+      const wdRow = el("div","mini"); wdRow.style.gridTemplateColumns="repeat(7,1fr)";
+      [1,2,3,4,5,6,0].forEach(k=>{
+        const off = (p.offDays||[]).includes(k);
+        const b = btn(WD[k],()=>{ p.offDays = off ? p.offDays.filter(x=>x!==k) : (p.offDays||[]).concat(k); save(); keepScroll(renderPeople); });
+        b.style.fontSize="13px"; b.setAttribute("aria-pressed", off?"false":"true"); wdRow.appendChild(b);
+      });
+      offBox.appendChild(wdRow);
+      const today = dstr(new Date());
+      p.offDates = (p.offDates||[]).filter(x=>x>=today);   // geçmiş izinleri temizle
+      const dRow = el("div","row"); dRow.style.marginTop="6px";
+      const di = el("input"); di.type="date"; di.min=today; di.setAttribute("aria-label",p.name+" izin günü");
+      di.style.cssText="flex:1 1 140px;font:inherit;color:var(--ink);background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:6px 10px;min-width:0";
+      const add = btn("Tek seferlik gelmeyeceği gün",()=>{ if(!di.value) return; if(!p.offDates.includes(di.value)) p.offDates.push(di.value); p.offDates.sort(); save(); keepScroll(renderPeople); },"btn");
+      dRow.append(di, add); offBox.appendChild(dRow);
+      if(p.offDates.length){
+        const chips = el("div","tools");
+        p.offDates.forEach(x=>chips.appendChild(btn(dayLabel(x)+" ×",()=>{ p.offDates=p.offDates.filter(y=>y!==x); save(); keepScroll(renderPeople); })));
+        offBox.appendChild(chips);
+      }
+      li.append(top, sel, phRow, wk, offBox, toggle, dropBox);
       list.appendChild(li);
     });
   }
@@ -889,6 +939,17 @@ ol.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;ga
     });
     const skipped = entries(sh).filter(e=>!(dir==="in"?e.in:e.out)).map(e=>person(e.pid).name);
     if(skipped.length) list.appendChild(el("li","empty",(dir==="in"?"Gidişte binmeyenler: ":"Dönüşte binmeyenler: ")+skipped.join(", ")));
+    const ds = routeDay();
+    const off = entries(sh).map(e=>person(e.pid)).filter(p=>absent(p, ds));
+    if(off.length){
+      const li = el("li","empty"); li.appendChild(el("div",null,"Bu gün gelmeyenler:"));
+      off.forEach(p=>{
+        const r = el("div","meta"); r.appendChild(nameWithTel(p, (p.offDates||[]).includes(ds) ? " (bu gün gelmiyor)" : " ("+WD[dayOf(ds).getDay()]+" günleri gelmiyor)"));
+        if((p.offDates||[]).includes(ds)){ const u = btn("Geri al",()=>{ p.offDates=p.offDates.filter(x=>x!==ds); save(); renderRoutes(); }); u.style.cssText="margin-left:8px;font-size:13px;border:1px solid var(--line);background:transparent;color:var(--ink);border-radius:6px;padding:2px 8px;cursor:pointer"; r.appendChild(u); }
+        li.appendChild(r);
+      });
+      list.appendChild(li);
+    }
 
     const addFactory = n => { const li=el("li","stop"); const b=el("div"); b.append(el("div","pax",FACTORY.name)); li.append(el("div","num end",n), b); list.appendChild(li); };
     if(dir==="out" && stops.length) addFactory("Çıkış");
@@ -896,7 +957,13 @@ ol.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;ga
       const li = el("li","stop"); const b = el("div");
       b.append(el("div","pax",stopLabel(s)));
       const mt = el("div","meta");
-      ridersAt(s.id, sh, dir).forEach((p,i)=>{ if(i) mt.appendChild(document.createTextNode(", ")); mt.appendChild(nameWithTel(p, p.stopId!==s.id?" (eve bırakma)":"")); });
+      ridersAt(s.id, sh, dir).forEach((p,i)=>{
+        if(i) mt.appendChild(document.createTextNode(", "));
+        mt.appendChild(nameWithTel(p, p.stopId!==s.id?" (iniş durağı)":""));
+        const x = btn("gelmeyecek",()=>{ if(!confirm(p.name+" "+dayLabel(ds)+" günü gelmeyecek olarak işaretlensin mi?")) return; p.offDates=(p.offDates||[]).concat(ds); save(); renderRoutes(); });
+        x.style.cssText="margin-left:6px;font-size:12px;border:1px solid var(--line);background:transparent;color:var(--muted);border-radius:6px;padding:1px 6px;cursor:pointer";
+        mt.appendChild(x);
+      });
       b.append(mt);
       const tools = el("div","tools");
       const up = btn("Önce",()=>moveInRoute(ordered, i, -1, dir)); up.disabled = i===0;
@@ -909,7 +976,8 @@ ol.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;ga
 
     renderLinks($("routeGo"), buildLinks(pointsFor(ordered, dir), ui.fromHere));
     const d = new Date();
-    $("rName").placeholder = SL[sh]+" "+(dir==="in"?"gidiş":"dönüş")+" "+d.toLocaleDateString("tr-TR",{day:"2-digit",month:"2-digit"});
+    $("rName").placeholder = SL[sh]+" "+(dir==="in"?"gidiş":"dönüş")+" "+dayLabel(ds);
+    $("rDayLbl").textContent = dayLabel(ds)+(rDaySel?"":" (otomatik)");
     renderSaved();
   }
 
@@ -1340,6 +1408,9 @@ ol.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;ga
   document.querySelectorAll(".tabs button").forEach(b=>b.addEventListener("click",()=>{ ui.tab=b.dataset.tab; save(); setStatus(""); render(); try{window.scrollTo(0,0);}catch(e){} }));
   document.querySelectorAll("#rShift button").forEach(b=>b.addEventListener("click",()=>{ ui.rShift=b.dataset.s; save(); renderRoutes(); }));
   document.querySelectorAll("#rDir button").forEach(b=>b.addEventListener("click",()=>{ ui.rDir=b.dataset.d; save(); renderRoutes(); }));
+  $("rPrev").addEventListener("click",()=>{ const d=dayOf(routeDay()); d.setDate(d.getDate()-1); rDaySel=dstr(d); renderRoutes(); });
+  $("rNext").addEventListener("click",()=>{ const d=dayOf(routeDay()); d.setDate(d.getDate()+1); rDaySel=dstr(d); renderRoutes(); });
+  $("rDayLbl").addEventListener("click",()=>{ rDaySel=null; renderRoutes(); });
   $("fromHere").addEventListener("change",e=>{ ui.fromHere=e.target.checked; save(); renderRoutes(); });
 
   $("svcName").addEventListener("change",()=>{ const v=$("svcName").value.trim(); if(v){ data.service=v; save(); } });
