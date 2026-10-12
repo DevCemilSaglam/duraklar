@@ -327,6 +327,8 @@ ol.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;ga
     if(!data.service) data.service = "Köseköy";
     if(!Array.isArray(data.trips)) data.trips = [];
     if(!Array.isArray(data.adds)) data.adds = [];
+    if(!Array.isArray(data.changes)) data.changes = [];
+    { const t2 = new Date(Date.now()-2*86400000); const lim2 = dstr(t2); data.changes = data.changes.filter(c=>c.to >= lim2); }
     { const wk = new Date(Date.now()-7*86400000); const lim = wk.getFullYear()+"-"+String(wk.getMonth()+1).padStart(2,"0")+"-"+String(wk.getDate()).padStart(2,"0");
       data.adds = data.adds.filter(a=>a.date >= lim); }
     if(!data.deleted || typeof data.deleted!=="object") data.deleted = {};
@@ -395,7 +397,7 @@ ol.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;ga
   function syncState(t, err){ const e=$("sync"); e.textContent=t; e.classList.toggle("warn",!!err); }
   function loadScript(src){ return new Promise((res,rej)=>{ const sc=document.createElement("script"); sc.src=src; sc.onload=res; sc.onerror=()=>rej(new Error(src)); document.head.appendChild(sc); }); }
   function schedulePush(){ if(!cloudReady || staleApp) return; clearTimeout(pushTimer); syncState("Kaydediliyor…"); pushTimer=setTimeout(pushNow, 700); }
-  const APPV = 17;          // uygulama sürümü: eski sürüm açık kalan sekmeler yazmayı bırakır
+  const APPV = 18;          // uygulama sürümü: eski sürüm açık kalan sekmeler yazmayı bırakır
   let staleApp = false, legacyDoc = null;
   function markStale(){
     if(staleApp) return; staleApp = true; clearTimeout(pushTimer);
@@ -422,12 +424,12 @@ ol.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;ga
     return JSON.stringify(v);
   }
   function tomb(id){ if(!data.deleted) data.deleted = {}; data.deleted[id] = Date.now(); }
-  function untomb(obj){ if(!data.deleted) return; ["stops","people","routes","trips","adds"].forEach(k=>(obj[k]||[]).forEach(x=>{ delete data.deleted[x.id]; })); }
+  function untomb(obj){ if(!data.deleted) return; ["stops","people","routes","trips","adds","changes"].forEach(k=>(obj[k]||[]).forEach(x=>{ delete data.deleted[x.id]; })); }
   function mergeData(local, remote){
     const del = Object.assign({}, local.deleted||{}, remote.deleted||{});
     const alive = arr => (arr||[]).filter(x=>!del[x.id]);
-    local = Object.assign({}, local, {stops:alive(local.stops), people:alive(local.people), routes:alive(local.routes), trips:alive(local.trips), adds:alive(local.adds)});
-    remote = Object.assign({}, remote, {stops:alive(remote.stops), people:alive(remote.people), routes:alive(remote.routes), trips:alive(remote.trips), adds:alive(remote.adds)});
+    local = Object.assign({}, local, {stops:alive(local.stops), people:alive(local.people), routes:alive(local.routes), trips:alive(local.trips), adds:alive(local.adds), changes:alive(local.changes)});
+    remote = Object.assign({}, remote, {stops:alive(remote.stops), people:alive(remote.people), routes:alive(remote.routes), trips:alive(remote.trips), adds:alive(remote.adds), changes:alive(remote.changes)});
     const m = Object.assign({stops:[],people:[],routes:[],trips:[],week:null,service:"Köseköy"}, remote);
     m.deleted = del;
     // Duraklar: bulutun sırası korunur, sadece bu cihazda olanlar güzergahta uygun yere eklenir
@@ -438,6 +440,7 @@ ol.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;ga
     m.people = byId(remote.people, local.people);
     m.routes = byId(remote.routes, local.routes);
     m.adds = byId(remote.adds, local.adds);
+    m.changes = byId(remote.changes, local.changes);
     m.trips = byId(remote.trips, local.trips).sort((a,b)=>b.start-a.start).slice(0,20);
     const lw = local.week, rw = remote.week;
     const len = w => w && w.entries ? w.entries.length : 0;
@@ -601,13 +604,34 @@ ol.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;ga
   function rangeLabel(r){ return (r.from===r.to ? dayLabel(r.from) : dayLabel(r.from)+" – "+dayLabel(r.to)) + (r.note?" · "+r.note:""); }
   function validStop(id){ return id && data.stops.some(s=>s.id===id) ? id : ""; }
   // Bu rotadaki yolcular: haftalık liste + o güne özel eklemeler/durak değişiklikleri
+  // Geçici değişiklik: belirli tarihlerde kişinin haftalık planının yerine geçer (aynı işlemde girilenler birlikte geçerli)
+  function activeCh(pid, ds){
+    const cov = (data.changes||[]).filter(c=>c.pid===pid && c.from<=ds && ds<=c.to);
+    if(!cov.length) return [];
+    const last = cov.reduce((m,c)=>c.created>m.created?c:m, cov[0]);
+    return cov.filter(c=>c.gid===last.gid);
+  }
+  function planned(shift, ds){
+    const res = [];
+    entries(shift).forEach(e=>{ const p = person(e.pid); if(activeCh(p.id, ds).length) return; res.push({p, e, in:e.in, out:e.out}); });
+    const seen = new Set();
+    (data.changes||[]).forEach(c=>{
+      if(c.shift!==shift || seen.has(c.pid) || !person(c.pid)) return;
+      const act = activeCh(c.pid, ds).find(x=>x.shift===shift);
+      if(!act) return; seen.add(c.pid);
+      if(res.some(x=>x.p.id===c.pid)) return;
+      res.push({p:person(c.pid), ch:act, in:!!act.in, out:!!act.out});
+    });
+    return res;
+  }
+  function isOff(x, ds){ return x.ch ? !!offRange(x.p, ds) : absent(x.p, ds); }
+  function chLabel(c){ return (c.from===c.to ? dayLabel(c.from) : dayLabel(c.from)+" – "+dayLabel(c.to)); }
   function riders(shift, dir){
     const ds = routeDay(), out = [];
-    entries(shift).forEach(e=>{
-      if(!(dir==="in"?e.in:e.out)) return;
-      const p = person(e.pid); if(absent(p, ds)) return;
-      const ws = validStop(dir==="in"?e.stopIn:e.stopOut);
-      out.push({p, e, stop: ws || stopFor(p, shift, dir), wk: !!ws});
+    planned(shift, ds).forEach(x=>{
+      if(!(dir==="in"?x.in:x.out) || isOff(x, ds)) return;
+      const ws = x.e ? validStop(dir==="in"?x.e.stopIn:x.e.stopOut) : "";
+      out.push({p:x.p, e:x.e, ch:x.ch, stop: ws || stopFor(x.p, shift, dir), wk: !!ws});
     });
     (data.adds||[]).filter(a=>a.date===ds && a.shift===shift && a.dir===dir && person(a.pid)).forEach(a=>{
       const r = out.find(x=>x.p.id===a.pid);
@@ -633,6 +657,54 @@ ol.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;ga
     }
     return best;
   }
+  // Koordinat ya da Google Maps linkinden konum oku
+  function parseCoord(t){
+    t = String(t||"").replace(/%2C/gi, ",");
+    let m = t.match(/!3d(-?\d{1,2}\.\d+)!4d(-?\d{1,3}\.\d+)/);
+    if(!m) m = t.match(/[?&](?:q|query|ll|destination|daddr)=(-?\d{1,2}\.\d+)\s*,\s*(-?\d{1,3}\.\d+)/);
+    if(!m) m = t.match(/@(-?\d{1,2}\.\d+),(-?\d{1,3}\.\d+)/);
+    if(!m) m = t.match(/(-?\d{1,2}\.\d{3,})\s*[,\s]\s*(-?\d{1,3}\.\d{3,})/);
+    if(!m) return null;
+    const lat = parseFloat(m[1]), lng = parseFloat(m[2]);
+    return (Math.abs(lat)<=90 && Math.abs(lng)<=180) ? {lat, lng} : null;
+  }
+  function moveStopTo(s, lat, lng, acc){
+    const d = Math.round(dist(s, {lat, lng}));
+    if(d > 300 && !confirm(stopLabel(s)+" "+d+" m taşınacak. Emin misin?")) return false;
+    s.lat = lat; s.lng = lng; s.acc = acc==null ? null : Math.round(acc); s.moved = Date.now(); delete s.src;
+    save(); setStatus(stopLabel(s)+" konumu güncellendi ("+d+" m)."); return true;
+  }
+  function moveStopHere(s, b, done){
+    if(!("geolocation" in navigator)){ alert("Bu tarayıcı konum vermiyor."); return; }
+    const lbl = b.textContent; b.disabled = true; b.textContent = "Konum alınıyor…";
+    navigator.geolocation.getCurrentPosition(pos=>{
+      b.disabled = false; b.textContent = lbl;
+      const c = pos.coords;
+      if(c.accuracy > 40 && !confirm("Konum hassasiyeti ±"+Math.round(c.accuracy)+" m, düşük. Yine de kaydedilsin mi? (Açık alanda birkaç saniye bekleyip tekrar denemek daha iyi.)")) return;
+      if(!confirm(stopLabel(s)+" şu anki konumuna taşınsın mı? ("+Math.round(dist(s,{lat:c.latitude,lng:c.longitude}))+" m)")) return;
+      if(moveStopTo(s, c.latitude, c.longitude, c.accuracy)) done && done();
+    }, err=>{ b.disabled = false; b.textContent = lbl; alert(err.code===1 ? "Konum izni verilmedi." : "Konum alınamadı, tekrar dene."); },
+    {enableHighAccuracy:true, timeout:20000, maximumAge:0});
+  }
+  function fixEditor(s, done){
+    const box = el("div"); box.style.cssText="margin-top:8px;padding:8px;border:1px solid var(--line);border-radius:10px";
+    box.appendChild(el("div","meta","Şu anki konum: "+s.lat.toFixed(6)+", "+s.lng.toFixed(6)));
+    const here = btn("Şu anki konumuma taşı",()=>moveStopHere(s, here, done),"btn primary"); here.style.marginTop="6px";
+    box.appendChild(here);
+    box.appendChild(el("p","note","Ya da Google Maps'te durağın tam yerine basılı tut, üstte çıkan koordinatı kopyalayıp yapıştır:")).style.margin="8px 0 4px";
+    const r = el("div","row");
+    const inp = el("input"); inp.type="text"; inp.placeholder="40.765432, 29.940812"; inp.style.cssText="flex:1 1 160px;font:inherit;color:var(--ink);background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:8px 10px;min-width:0";
+    const ok = btn("Kaydet",()=>{
+      const v = inp.value.trim();
+      if(/goo\.gl|maps\.app/i.test(v) && !parseCoord(v)){ alert("Kısa Google linkinden konum okunamıyor. Haritada noktaya basılı tutup çıkan koordinatı kopyala."); return; }
+      const q = parseCoord(v); if(!q){ alert("Koordinat okunamadı. Örnek: 40.765432, 29.940812"); return; }
+      if(moveStopTo(s, q.lat, q.lng, null)) done && done();
+    },"btn");
+    r.append(inp, ok); box.appendChild(r);
+    return box;
+  }
+  let openFix = null;
+
   function insertStop(lat, lng, acc, name, t){
     const idx = bestIndex({lat,lng});
     data.stops.splice(idx, 0, {id:uid(), lat, lng, acc: acc==null?null:Math.round(acc), t:t||Date.now(), name:name||""});
@@ -717,6 +789,8 @@ ol.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;ga
 
       const meta = el("div","meta", fmtDate(s.t)+" kaydedildi");
       if(s.acc!=null){ meta.appendChild(el("span", s.acc>50?"warn":null, "  ±"+s.acc+" m"+(s.acc>50?" (konum zayıf)":""))); }
+      if(s.moved) meta.appendChild(el("span",null,"  · konum düzeltildi "+fmtDate(s.moved)));
+      const srcWarn = s.src==="place" ? el("div","meta warn","Konum Google'ın mekân tahmini (ör. market binası), durduğun nokta değil. Yerinde 'Konumu düzelt' ile güncelle.") : null;
 
       const tools = el("div","tools");
       const up = btn("Yukarı",()=>move(i,-1)); up.disabled = i===0;
@@ -729,9 +803,13 @@ ol.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;ga
         data.people.forEach(p=>{ if(p.stopId===s.id) p.stopId=""; if(p.dropStopId===s.id){ p.dropStopId=""; p.dropExits=[]; } });
         tomb(s.id); data.stops.splice(i,1); save(); render();
       },"del");
-      tools.append(up,dn,addP,view,del);
+      const fix = btn("Konumu düzelt",()=>{ openFix = openFix===s.id ? null : s.id; keepScroll(renderStops); });
+      tools.append(up,dn,addP,view,fix,del);
 
-      body.append(inp, paxEl, meta, tools);
+      body.append(inp, paxEl, meta);
+      if(srcWarn) body.appendChild(srcWarn);
+      body.appendChild(tools);
+      if(openFix===s.id) body.appendChild(fixEditor(s, ()=>{ openFix=null; keepScroll(renderStops); }));
       li.append(el("div","num",i+1), body);
       list.appendChild(li);
     });
@@ -834,7 +912,20 @@ ol.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;ga
         p.off.forEach(r=>chips.appendChild(btn(rangeLabel(r)+" ×",()=>{ if(!confirm(rangeLabel(r)+" silinsin mi?")) return; p.off=p.off.filter(y=>y!==r); save(); keepScroll(renderPeople); })));
         offBox.appendChild(chips);
       }
-      li.append(top, sel, phRow, wk, offBox, toggle, dropBox);
+      const chBox = el("div"); chBox.style.marginTop="10px";
+      chBox.appendChild(el("div","where","Geçici vardiya / servis değişikliği (belirli tarihler)"));
+      const gs = changeGroups(p.id);
+      if(gs.length){
+        const chips = el("div","tools");
+        gs.forEach(g=>chips.appendChild(btn(chSummary(g)+" ×",()=>{ if(!confirm(chSummary(g)+" silinsin mi?")) return; delGroup(g); save(); keepScroll(renderPeople); })));
+        chBox.appendChild(chips);
+      }
+      const chToggle = btn("+ Değişiklik ekle",()=>{ chForm.classList.toggle("hidden"); }); chToggle.style.cssText=smallBtn+";margin-top:6px";
+      const chForm = el("div","hidden");
+      const myE = entriesOf(p.id)[0];
+      chForm.appendChild(changeForm(p, {shift: myE ? myE.shift : "08"}, ()=>keepScroll(renderPeople)));
+      chBox.append(chToggle, chForm);
+      li.append(top, sel, phRow, wk, offBox, chBox, toggle, dropBox);
       list.appendChild(li);
     });
   }
@@ -844,6 +935,20 @@ ol.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;ga
     $("svcName").value = data.service;
     renderReview();
     const box = $("weekShifts"); box.innerHTML="";
+    const gs = changeGroups();
+    if(gs.length){
+      const blk = el("div","shiftblock");
+      const h = el("h3",null,"Geçici değişiklikler"); h.appendChild(el("span",null,"haftalık listenin yerine geçer")); blk.appendChild(h);
+      gs.forEach(g=>{
+        const p = person(g[0].pid); if(!p) return;
+        const row = el("div","entry"); const top = el("div","top");
+        const nm = el("span"); nm.appendChild(nameWithTel(p)); nm.style.fontWeight="600";
+        top.append(nm, btn("Sil",()=>{ if(!confirm(p.name+": "+chSummary(g)+" silinsin mi?")) return; delGroup(g); save(); renderWeek(); },"x"));
+        row.append(top, el("div","meta",chSummary(g)));
+        blk.appendChild(row);
+      });
+      box.appendChild(blk);
+    }
     $("weekTitle").textContent = data.week && data.week.label ? "Bu hafta ("+data.week.label+")" : "Bu hafta";
     SHIFTS.slice().sort((a,b)=>["08","16","00"].indexOf(a)-["08","16","00"].indexOf(b)).forEach(sh=>{
       const es = entries(sh);
@@ -1008,10 +1113,15 @@ ol.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;ga
       const num = el("div","num","?"); num.style.background="var(--muted)";
       li.append(num, b); list.appendChild(li);
     });
-    const skipped = entries(sh).filter(e=>!(dir==="in"?e.in:e.out)).map(e=>person(e.pid).name);
-    if(skipped.length) list.appendChild(el("li","empty",(dir==="in"?"Gidişte binmeyenler: ":"Dönüşte binmeyenler: ")+skipped.join(", ")));
     const ds = routeDay();
-    const off = entries(sh).map(e=>person(e.pid)).filter(p=>absent(p, ds));
+    const pl = planned(sh, ds);
+    const skipped = pl.filter(x=>!isOff(x, ds) && !(dir==="in"?x.in:x.out)).map(x=>x.p.name+(x.ch?" (geçici, "+chLabel(x.ch)+")":""));
+    if(skipped.length) list.appendChild(el("li","empty",(dir==="in"?"Gidişte binmeyenler: ":"Dönüşte binmeyenler: ")+skipped.join(", ")));
+    const moved = entries(sh).map(e=>person(e.pid)).filter(p=>{ const a = activeCh(p.id, ds); return a.length && !a.some(c=>c.shift===sh); });
+    if(moved.length){
+      list.appendChild(el("li","empty","Geçici olarak bu vardiyada değil: "+moved.map(p=>{ const a=activeCh(p.id, ds); const sh2=a.filter(c=>c.shift).map(c=>SL[c.shift]); return p.name+" ("+(sh2.length?sh2.join(", ")+" vardiyasında":"servis kullanmıyor")+", "+chLabel(a[0])+")"; }).join(", ")));
+    }
+    const off = pl.filter(x=>isOff(x, ds)).map(x=>x.p);
     if(off.length){
       const li = el("li","empty"); li.appendChild(el("div",null,"Bu gün gelmeyenler:"));
       off.forEach(p=>{
@@ -1031,7 +1141,7 @@ ol.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;ga
       const mt = el("div","meta");
       rs.filter(r=>r.stop===s.id).forEach(r=>{
         const p = r.p;
-        const tag = r.added ? " (bu gün eklendi)" : r.day ? " (bu gün bu durakta)" : r.wk ? " (bu hafta bu durakta)" : (dir==="out" && p.stopId!==s.id) ? " (iniş durağı)" : "";
+        const tag = r.added ? " (bu gün eklendi)" : r.day ? " (bu gün bu durakta)" : r.ch ? " (geçici, "+chLabel(r.ch)+")" : r.wk ? " (bu hafta bu durakta)" : (dir==="out" && p.stopId!==s.id) ? " (iniş durağı)" : "";
         const line = el("div"); line.style.padding="2px 0";
         line.appendChild(nameWithTel(p, tag));
         const x = btn("düzenle",()=>{ openEdit = openEdit===p.id ? null : p.id; renderRoutes(); });
@@ -1044,7 +1154,9 @@ ol.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;ga
       const tools = el("div","tools");
       const up = btn("Önce",()=>moveInRoute(ordered, i, -1, dir)); up.disabled = i===0;
       const dn = btn("Sonra",()=>moveInRoute(ordered, i, 1, dir)); dn.disabled = i===ordered.length-1;
-      tools.append(up, dn); b.append(tools);
+      const mv = btn("Konumu buraya taşı",()=>moveStopHere(s, mv, ()=>keepScroll(renderRoutes)));
+      tools.append(up, dn, mv); b.append(tools);
+      if(s.src==="place") b.appendChild(el("div","meta warn","Konum tahmini, yerinde düzelt"));
       li.append(el("div","num",i+1), b); list.appendChild(li);
     });
     if(dir==="in" && stops.length) addFactory("Varış");
@@ -1055,6 +1167,7 @@ ol.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;ga
     const d = new Date();
     $("rName").placeholder = SL[sh]+" "+(dir==="in"?"gidiş":"dönüş")+" "+dayLabel(ds);
     $("rDayLbl").textContent = dayLabel(ds)+(rDaySel?"":" (otomatik)");
+    if(sh==="00"){ const pv = dayOf(ds); pv.setDate(pv.getDate()-1); $("rDayLbl").appendChild(el("div","meta",dir==="in" ? "Gidiş: "+dayLabel(dstr(pv))+" gecesi" : "Dönüş: "+dayLabel(ds)+" sabah 08:00")); }
     renderSaved();
   }
 
@@ -1078,6 +1191,71 @@ ol.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;ga
       else if(!p.dropExits.includes(EXIT[sh])) p.dropExits.push(EXIT[sh]);
     }
   }
+  function chSummary(g){
+    const c0 = g[0];
+    if(!c0.shift) return chLabel(c0)+" · servis kullanmıyor";
+    return chLabel(c0)+" · "+g.map(c=>SL[c.shift]+" "+(c.in&&c.out?"gidiş+dönüş":c.in?"sadece gidiş":c.out?"sadece dönüş":"binmiyor")).join(", ");
+  }
+  function changeGroups(pid){
+    const m = {};
+    (data.changes||[]).filter(c=>!pid || c.pid===pid).forEach(c=>{ (m[c.gid]=m[c.gid]||[]).push(c); });
+    return Object.values(m).sort((a,b)=>a[0].from<b[0].from?-1:1);
+  }
+  function delGroup(g){ g.forEach(c=>tomb(c.id)); const ids = new Set(g.map(c=>c.id)); data.changes = data.changes.filter(c=>!ids.has(c.id)); }
+  function addChange(pid, from, to, list){
+    const gid = uid(), now = Date.now();
+    list.forEach(x=>data.changes.push({id:uid(), gid, created:now, pid, from, to, shift:x.shift, in:!!x.in, out:!!x.out}));
+  }
+  // Tarih aralıklı vardiya/servis değişikliği formu
+  function changeForm(p, def, onDone){
+    const box = el("div"); box.style.cssText="margin-top:6px;padding:8px;border:1px solid var(--line);border-radius:10px";
+    const css="flex:1 1 120px;font:inherit;color:var(--ink);background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:6px 10px;min-width:0";
+    const today = dstr(new Date());
+    const r1 = el("div","row");
+    const d1 = el("input"); d1.type="date"; d1.value=def.from||today; d1.style.cssText=css; d1.setAttribute("aria-label","Başlangıç");
+    const d2 = el("input"); d2.type="date"; d2.value=def.to||""; d2.style.cssText=css; d2.setAttribute("aria-label","Bitiş");
+    r1.append(d1, d2);
+    const r2 = el("div","row"); r2.style.marginTop="6px";
+    const shs = el("select"); shs.style.cssText=css; shs.setAttribute("aria-label","Vardiya");
+    [["00","00:00 vardiyası"],["08","08:00 vardiyası"],["16","16:00 vardiyası"],["","Servis kullanmıyor"]].forEach(([v,l])=>{ const o=el("option",null,l); o.value=v; shs.appendChild(o); });
+    shs.value = def.shift!=null ? def.shift : "08";
+    r2.appendChild(shs);
+    const r3 = el("div","row"); r3.style.marginTop="6px";
+    const ci = el("label","check"); const cin = el("input"); cin.type="checkbox"; cin.checked = def.in!==false; ci.append(cin, document.createTextNode(" Gidişte biniyor"));
+    const co = el("label","check"); const cout = el("input"); cout.type="checkbox"; cout.checked = def.out!==false; co.append(cout, document.createTextNode(" Dönüşte biniyor"));
+    r3.append(ci, co);
+    const pv = el("div","meta");
+    const upd = ()=>{
+      const sh = shs.value, f = d1.value, t = d2.value && d2.value>=f ? d2.value : f;
+      ci.style.display = co.style.display = sh ? "" : "none";
+      if(!f){ pv.textContent=""; return; }
+      if(!sh){ pv.textContent = (f===t?dayLabel(f):dayLabel(f)+" – "+dayLabel(t))+": servise binmiyor."; return; }
+      const fi = dayOf(f), la = dayOf(t);
+      let txt;
+      if(sh==="00"){ fi.setDate(fi.getDate()-1); txt = "İlk gidiş: "+dayLabel(dstr(fi))+" gecesi · Son dönüş: "+dayLabel(t)+" 08:00"; }
+      else { const ld = dayOf(t); if(sh==="16") ld.setDate(ld.getDate()+1); txt = "İlk gidiş: "+dayLabel(f)+" "+SL[sh]+" · Son dönüş: "+dayLabel(dstr(ld))+" "+SL[EXIT[sh]]; }
+      const ex = (def.extra||[]).filter(x=>x.shift && x.shift!==sh);
+      pv.textContent = txt+". Bu tarihlerde haftalık listedeki vardiyasının yerine geçer."+(ex.length?" Diğer vardiyası ("+ex.map(x=>SL[x.shift]).join(", ")+") aynen kalır.":"");
+    };
+    [d1,d2,shs].forEach(x=>x.addEventListener("change",upd)); upd();
+    const ok = btn("Kaydet",()=>{
+      if(!d1.value){ d1.focus(); return; }
+      const f = d1.value, t = d2.value && d2.value>=f ? d2.value : f;
+      const sh = shs.value;
+      const extra = sh ? (def.extra||[]).filter(x=>x.shift && x.shift!==sh) : [];
+      let list = sh && (cin.checked || cout.checked) ? [{shift:sh, in:cin.checked, out:cout.checked}] : [];
+      list = list.concat(extra);
+      if(!list.length) list = [{shift:"", in:false, out:false}];
+      addChange(p.id, f, t, list);
+      save(); onDone && onDone();
+      setStatus(p.name+": "+chSummary(activeChAny(p.id, f)));
+    },"btn primary");
+    ok.style.marginTop="6px";
+    box.append(r1, r2, r3, pv, ok);
+    return box;
+  }
+  function activeChAny(pid, ds){ const a = activeCh(pid, ds); return a.length ? a : [{from:ds,to:ds,shift:""}]; }
+
   function riderEditor(r, sh, dir, ds){
     const p = r.p, box = el("div"); box.style.cssText="margin:6px 0 8px;padding:8px;border:1px solid var(--line);border-radius:10px";
     box.appendChild(el("div","meta",(dir==="in"?"Bindiği durak":"İndiği durak")+" · "+p.name));
@@ -1095,7 +1273,18 @@ ol.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;ga
     t.append(b1, b2);
     if(r.day){ t.appendChild(btn(r.added?"Rotadan çıkar":"Değişikliği geri al",()=>{ removeDay(r.day); openEdit=null; save(); renderRoutes(); })); }
     if(!r.added){ const g = btn("Bu gün gelmeyecek",()=>{ p.off=(p.off||[]).concat({from:ds,to:ds,note:""}); openEdit=null; save(); renderRoutes(); }); g.style.color="var(--danger)"; t.appendChild(g); }
+    if(!r.added){
+      const more = btn("Birkaç gün için değiştir…",()=>{ fw.classList.toggle("hidden"); });
+      t.appendChild(more);
+    }
+    const fw = el("div","hidden");
+    fw.appendChild(el("div","meta","Örn. 3 gün gece vardiyasına gelecek, sabah çıkışta binmeyecek: vardiyayı seç, 'Dönüşte biniyor' işaretini kaldır."));
+    const cur = r.ch || r.e || {};
+    const act = activeCh(p.id, ds);
+    const others = (act.length ? act : entriesOf(p.id)).filter(x=>x.shift && x.shift!==sh).map(x=>({shift:x.shift, in:!!x.in, out:!!x.out}));
+    fw.appendChild(changeForm(p, {from:ds, shift:sh, in: dir==="in" ? false : !!cur.in, out: dir==="out" ? false : !!cur.out, extra:others}, ()=>{ openEdit=null; renderRoutes(); }));
     box.appendChild(t);
+    box.appendChild(fw);
     return box;
   }
   function renderAddBox(sh, dir, ds, rs){
@@ -1125,8 +1314,13 @@ ol.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;ga
       if(!st && !stopFor(p, sh, dir)) setStatus(p.name+" eklendi. Durağı yok, listede '?' ile görünüyor.");
     };
     const b1 = btn("Sadece "+dayLabel(ds),()=>go(false)); b1.style.cssText="background:var(--sign);color:var(--sign-ink);border-color:var(--sign)";
-    t.append(b1, btn("Bu hafta her gün",()=>go(true)));
-    box.appendChild(t);
+    const fr = el("div");
+    t.append(b1, btn("Bu hafta her gün",()=>go(true)), btn("Tarih aralığı…",()=>{
+      const p = person(ps.value); if(!p){ ps.focus(); return; }
+      fr.innerHTML="";
+      fr.appendChild(changeForm(p, {from:ds, shift:sh, in:true, out:true}, ()=>renderRoutes()));
+    }));
+    box.appendChild(t); box.appendChild(fr);
   }
 
   // Rotada iki durağın yerini değiştir: ana güzergah sırasında da kalıcı olarak değişir
@@ -1283,7 +1477,7 @@ ol.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;ga
         const row = el("div","cand");
         const near = data.stops.find(s=>dist(s,c) < NEAR_M);
         const head = el("div","pax", (ci+1)+". "+hm(c.t)+" · "+(c.dur<15000 ? "kısa duruş" : secs(c.dur)+" durdun"));
-        if(tr.source==="timeline") head.appendChild(el("span","meta", c.visit ? "  (Google ziyareti)" : c.rough ? "  (yaklaşık)" : "  ("+(c.n||1)+" GPS kaydı)"));
+        if(tr.source==="timeline") head.appendChild(el("span", c.place ? "meta warn" : "meta", c.place ? "  (Google'ın mekân tahmini, konum kayabilir)" : c.visit ? "  (Google ziyareti)" : c.rough ? "  (yaklaşık)" : "  ("+(c.n||1)+" GPS kaydı)"));
         row.appendChild(head);
         if(c.status==="added"){ const st=data.stops.find(s=>s.id===c.stopId); row.appendChild(el("div","meta","Durak olarak eklendi"+(st?": "+stopLabel(st):""))); det.appendChild(row); return; }
         if(c.status==="ignored"){ row.appendChild(el("div","meta","Yoksayıldı")); row.style.opacity=".55";
@@ -1293,6 +1487,7 @@ ol.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;ga
         const tools = el("div","tools");
         const add = btn("Durak olarak ekle",()=>{
           const idx = insertStop(c.lat, c.lng, null, inp.value.trim(), c.t);
+          if(c.place) data.stops[idx].src = "place";
           c.status="added"; c.stopId = data.stops[idx].id;
           save(); keepScroll(renderStops);
           setStatus("Durak eklendi, güzergahta uygun yere kondu.");
@@ -1384,9 +1579,17 @@ ol.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;ga
     }
     tl.visits.forEach(v=>{
       const t0=Math.max(v.t0,a), t1=Math.min(v.t1,b); if(t1-t0 < STOP_MIN) return;
-      const ex = out.find(o=>dist(o,v) < 80 && o.t <= t1+60000 && o.t+o.dur >= t0-60000);
+      // Google'ın ziyaret noktası tahmin edilen mekânın (ör. market) kayıtlı konumudur. Aynı aralıkta GPS varsa onu kullan.
+      const gp = tl.gps.filter(p=>p.t>=t0-30000 && p.t<=t1+30000 && dist(p,v) < 500);
+      let lat=v.lat, lng=v.lng, place=true;
+      if(gp.length){
+        const la = gp.map(p=>p.lat).sort((x,y)=>x-y), lo = gp.map(p=>p.lng).sort((x,y)=>x-y);
+        lat = la[Math.floor(la.length/2)]; lng = lo[Math.floor(lo.length/2)]; place=false;
+      }
+      const q = {lat, lng};
+      const ex = out.find(o=>dist(o,q) < 80 && o.t <= t1+60000 && o.t+o.dur >= t0-60000);
       if(ex){ ex.visit=true; }
-      else out.push({id:uid(), lat:v.lat, lng:v.lng, t:t0, dur:t1-t0, status:"", visit:true});
+      else out.push({id:uid(), lat, lng, t:t0, dur:t1-t0, status:"", visit:true, place});
     });
     out.sort((x,y)=>x.t-y.t);
     return {stops:out, km, count:src.length, gpsMode: g.length>=10};
@@ -1553,8 +1756,8 @@ ol.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;ga
 
   // ---------- events ----------
   document.querySelectorAll(".tabs button").forEach(b=>b.addEventListener("click",()=>{ ui.tab=b.dataset.tab; save(); setStatus(""); render(); try{window.scrollTo(0,0);}catch(e){} }));
-  document.querySelectorAll("#rShift button").forEach(b=>b.addEventListener("click",()=>{ ui.rShift=b.dataset.s; save(); renderRoutes(); }));
-  document.querySelectorAll("#rDir button").forEach(b=>b.addEventListener("click",()=>{ ui.rDir=b.dataset.d; save(); renderRoutes(); }));
+  document.querySelectorAll("#rShift button").forEach(b=>b.addEventListener("click",()=>{ openEdit=null; ui.rShift=b.dataset.s; save(); renderRoutes(); }));
+  document.querySelectorAll("#rDir button").forEach(b=>b.addEventListener("click",()=>{ openEdit=null; ui.rDir=b.dataset.d; save(); renderRoutes(); }));
   $("rPrev").addEventListener("click",()=>{ const d=dayOf(routeDay()); d.setDate(d.getDate()-1); rDaySel=dstr(d); renderRoutes(); });
   $("rNext").addEventListener("click",()=>{ const d=dayOf(routeDay()); d.setDate(d.getDate()+1); rDaySel=dstr(d); renderRoutes(); });
   $("rDayLbl").addEventListener("click",()=>{ rDaySel=null; renderRoutes(); });
